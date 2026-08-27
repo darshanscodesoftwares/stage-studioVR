@@ -143,6 +143,14 @@ The house-lights switch exploits this. Stage lights in your eyes is **easy
 mode** — you cannot see any faces. House lights up is **hard mode**. The brief
 suspects that one switch may be the most useful setting in the whole app.
 
+**Spot cones spill upward if you let them.** A spot's half-angle has to be
+smaller than the angle its axis is tilted below horizontal, or the top edge of
+the cone points *above* the horizon and washes the ceiling and back wall with a
+hard-edged wedge. The stage spots run 18° on an axis tilted 23.1° down, leaving
+the top edge 5.1° below horizontal — it physically cannot reach the ceiling.
+They hang on the front-of-house bar that `sv-truss` draws, so the light in the
+room and the fixtures you can see are in the same place.
+
 ## The crowd lab
 
 `sv-crowd` exists to answer the brief's central question — *how many people,

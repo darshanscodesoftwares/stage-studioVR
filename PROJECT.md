@@ -315,7 +315,15 @@ here too.
     are not distance-attenuated and stay in the **0–3** range. Mixing the two
     scales looks exactly like a broken lighting rig. Cost one render cycle in
     M0 to find.
-11. **Headless virtual time does not drive the Web Audio clock.** Timers
+11. **A spot's cone half-angle must be SMALLER than the angle its axis is
+    tilted below horizontal**, or the top edge of the cone points upward and
+    sprays the ceiling and back wall with a hard-edged wedge that reads as a
+    broken lighting rig rather than as a light. The stage wash was 34° on an
+    axis tilted 28° down: 6° above horizontal, hitting the ceiling 15m away.
+    It also gave a 7.5m pool for a 7m stage. Check the arithmetic before
+    widening any spot:
+    `topEdge = halfAngle - degrees(asin(-dir.y / |dir|))` must be negative.
+12. **Headless virtual time does not drive the Web Audio clock.** Timers
     fast-forward while audio runs on the real clock, so a series of
     `setTimeout` samples all read the same buffer and a signal test measures
     nothing while appearing to pass. Test the analyser maths by stubbing

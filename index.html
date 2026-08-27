@@ -857,22 +857,41 @@ AFRAME.registerComponent('sv-lighting', {
        created: the light component resolves its `target` selector during
        init, and a selector that matches nothing leaves the spot aimed at the
        world origin — which is out in the audience, not on the stage. */
-    add({ id: 'svT1', position: '-2.2 1.2 -8' }, []);
-    add({ id: 'svT2', position: '2.2 1.2 -8' }, []);
+    add({ id: 'svT1', position: '-0.8 1.4 -8' }, []);
+    add({ id: 'svT2', position: '0.8 1.4 -8' }, []);
 
-    /* Throw is ~12.7m, so intensity ≈ 3 * 12.7^2 ≈ 480 for a solid wash.
-       Only the first spot casts shadows: one 1024 map over the stage alone is
+    /* ---- CONE GEOMETRY, check this before widening anything -------------
+       A spot's cone half-angle has to be smaller than the angle its axis is
+       tilted below horizontal, or the top edge of the cone points UPWARD and
+       sprays the ceiling and back wall with a hard-edged wedge that reads as
+       a broken lighting rig.
+
+       These sit 23.1 deg below horizontal, so 18 deg keeps the top edge 5 deg
+       below horizontal — it physically cannot reach the ceiling. The previous
+       34 deg put it 6 deg ABOVE, and lit the room instead of the speaker.
+
+       18 deg also gives a 3.6m pool at this throw, which is a stage wash. The
+       old 34 deg gave 7.5m, wider than the stage is deep.
+
+       They live at the front-of-house bar, which sv-truss draws: lights the
+       audience can see, in the position the fixtures are actually hanging.
+       And front-of-house is the point — stage lights in your EYES is the easy
+       mode, because you cannot see any faces. Lighting from directly overhead
+       would lose that.
+       ------------------------------------------------------------------- */
+    const SPOT = 'type: spot; color: #fff0d2; angle: 18; penumbra: 0.45; ' +
+                 'distance: 0; decay: 2; ';
+
+    /* Only one spot casts shadows: a single 1024 map over the stage alone is
        affordable and is all that is needed to stop the lectern, the mic stand
-       and eventually the speaker from floating. The audience will never cast
-       — see the brief. */
-    add({ light: 'type: spot; color: #fff0d2; intensity: 480; angle: 34; penumbra: 0.5; ' +
-                 'distance: 0; decay: 2; target: #svT1; castShadow: true; ' +
+       and eventually the speaker from floating. The audience never casts —
+       see the brief. */
+    add({ light: SPOT + 'intensity: 368; target: #svT1; castShadow: true; ' +
                  'shadowMapWidth: 1024; shadowMapHeight: 1024; shadowBias: -0.0012; ' +
-                 'shadowCameraNear: 2; shadowCameraFar: 26; shadowRadius: 2',
-          position: '-4.5 6.4 1.5' }, this.stage);
-    add({ light: 'type: spot; color: #fff0d2; intensity: 480; angle: 34; penumbra: 0.5; ' +
-                 'distance: 0; decay: 2; target: #svT2',
-          position: '4.5 6.4 1.5' }, this.stage);
+                 'shadowCameraNear: 2; shadowCameraFar: 24; shadowRadius: 2',
+          position: '-4.5 5.75 1.5' }, this.stage);
+    add({ light: SPOT + 'intensity: 368; target: #svT2',
+          position: '4.5 5.75 1.5' }, this.stage);
 
     this.housOn = true;
     this.setHouse(true);
@@ -888,7 +907,7 @@ AFRAME.registerComponent('sv-lighting', {
        up, not down — that is the point of the easy mode: lit speaker, dark
        auditorium, no faces to see. */
     this.stage.forEach(function (e) {
-      e.setAttribute('light', 'intensity', on ? 340 : 620);
+      e.setAttribute('light', 'intensity', on ? 300 : 520);
     });
 
     const st = document.getElementById('lightState');
@@ -912,9 +931,16 @@ AFRAME.registerComponent('sv-truss', {
     const root = new THREE.Group();
     this.el.object3D.add(root);
 
-    const barZ = [-6.4, -9.6];
-    const barY = 6.35;
-    const xs = [-6.6, -4.4, -2.2, 0, 2.2, 4.4, 6.6];
+    /* Two bars over the stage plus a front-of-house bar out in the house.
+       The FOH bar is where sv-lighting actually hangs the stage spots, so
+       the light in the room and the fixtures you can see are in the same
+       place — which they were not before. */
+    const bars = [
+      { z: -6.4, y: 6.35, w: 16.8, n: 7 },
+      { z: -9.6, y: 6.35, w: 16.8, n: 7 },
+      { z:  1.5, y: 5.90, w: 11.0, n: 5 }     // front of house
+    ];
+    const AIM = { x: 0.35, y: 1.2, z: -7.8 };  // everything points at the stage
 
     /* --- the bars themselves: one mesh each --- */
     const barTex = ProcTex.get('metal', 8, 1);
@@ -923,24 +949,29 @@ AFRAME.registerComponent('sv-truss', {
     });
     if (barTex) { barMat.map = barTex.map; barMat.normalMap = barTex.normalMap; }
 
-    const barGeo = new THREE.BoxGeometry(16.8, 0.26, 0.26);
-    barZ.forEach(function (z) {
-      const m = new THREE.Mesh(barGeo, barMat);
-      m.position.set(0, barY, z);
-      root.add(m);
+    const dummy = new THREE.Object3D();
+    const barGeo = new THREE.BoxGeometry(1, 0.26, 0.26);   // unit, scaled per bar
+    const barsI = new THREE.InstancedMesh(barGeo, barMat, bars.length);
+    bars.forEach(function (b, i) {
+      dummy.position.set(0, b.y, b.z);
+      dummy.quaternion.identity();
+      dummy.scale.set(b.w, 1, 1);
+      dummy.updateMatrix();
+      barsI.setMatrixAt(i, dummy.matrix);
     });
+    barsI.instanceMatrix.needsUpdate = true;
+    root.add(barsI);
 
     /* --- drops to the ceiling: one instanced mesh --- */
-    const dropLen = (HALL.h - barY);
-    const dropGeo = new THREE.CylinderGeometry(0.022, 0.022, dropLen, 6);
-    const drops = new THREE.InstancedMesh(dropGeo, barMat, barZ.length * 3);
-    const dummy = new THREE.Object3D();
+    const dropGeo = new THREE.CylinderGeometry(0.022, 0.022, 1, 6);
+    const drops = new THREE.InstancedMesh(dropGeo, barMat, bars.length * 3);
     let di = 0;
-    barZ.forEach(function (z) {
-      [-6.6, 0, 6.6].forEach(function (x) {
-        dummy.position.set(x, barY + dropLen / 2, z);
+    bars.forEach(function (b) {
+      const len = HALL.h - b.y;
+      [-b.w * 0.39, 0, b.w * 0.39].forEach(function (x) {
+        dummy.position.set(x, b.y + len / 2, b.z);
         dummy.quaternion.identity();
-        dummy.scale.set(1, 1, 1);
+        dummy.scale.set(1, len, 1);
         dummy.updateMatrix();
         drops.setMatrixAt(di++, dummy.matrix);
       });
@@ -949,7 +980,8 @@ AFRAME.registerComponent('sv-truss', {
     root.add(drops);
 
     /* --- fixtures: bodies and lenses, one instanced mesh each --- */
-    const count = xs.length * barZ.length;
+    let count = 0;
+    bars.forEach(function (b) { count += b.n; });
 
     const bodyGeo = new THREE.CylinderGeometry(0.085, 0.118, 0.30, 10);
     const bodyMat = new THREE.MeshStandardMaterial({
@@ -972,11 +1004,15 @@ AFRAME.registerComponent('sv-truss', {
     const q = new THREE.Quaternion();
 
     let i = 0;
-    barZ.forEach(function (z) {
-      xs.forEach(function (x) {
-        pos.set(x, barY - 0.30, z);
-        // each fixture leans toward the centreline of the stage
-        aim.set(x * 0.45, 1.3, z + 2.2);
+    bars.forEach(function (b) {
+      const span = b.w * 0.82;
+      for (let k = 0; k < b.n; k++) {
+        const x = b.n === 1 ? 0 : -span / 2 + (span / (b.n - 1)) * k;
+        pos.set(x, b.y - 0.30, b.z);
+
+        /* Every fixture on every bar points at the stage, so the rig reads as
+           aimed rather than as decoration hung at random. */
+        aim.set(x * AIM.x, AIM.y, AIM.z);
         dir.copy(aim).sub(pos).normalize();
 
         // the cylinder's length runs along local +Y, so point local -Y at the aim
@@ -995,14 +1031,15 @@ AFRAME.registerComponent('sv-truss', {
         lenses.setMatrixAt(i, dummy.matrix);
 
         i++;
-      });
+      }
     });
     bodies.instanceMatrix.needsUpdate = true;
     lenses.instanceMatrix.needsUpdate = true;
     root.add(bodies);
     root.add(lenses);
 
-    console.log('[sv] truss: ' + count + ' fixtures in 2 instanced draw calls');
+    console.log('[sv] truss: ' + bars.length + ' bars, ' + count +
+                ' fixtures, 4 instanced draw calls');
   }
 });
 
