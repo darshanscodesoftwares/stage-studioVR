@@ -218,6 +218,51 @@ This is the part that matters most for whoever picks this up.
 - **Commit in small, verified steps** with a message that explains *why*, not
   what. Ask before committing.
 
+## Tooling — what this machine can run
+
+Worked out in [docs/session-2026-08-27.md](docs/session-2026-08-27.md); the
+conclusions are here.
+
+**The hardware sets the limit.** No discrete GPU — Intel HD Graphics on a 3rd
+gen Core / Xeon E3 v2, circa 2012. Modelling, conversion and scripting are
+fine. GPU rendering is not, and **local AI 3D generation (Hunyuan3D, TRELLIS,
+TripoSR) is out** — they want a CUDA card with ~6GB VRAM. That is why the
+headset, not this screen, is where anything gets judged.
+
+**SketchUp was considered and ruled out.** No Linux build has ever existed; the
+browser version exports only `.skp` and `.stl`, neither of which carries UVs or
+materials into a glTF pipeline. There is no way to drive it from a script, and
+`.skp` is a proprietary binary. Its 3D Warehouse remains a decent *manual*
+source for furniture and seating, with loose licensing that needs checking
+per model.
+
+**The stack to install:**
+
+| Tool | Why |
+| --- | --- |
+| **Blender** | `blender --background --python script.py`, or `pip install bpy`. Modelling, rigging, animation, UV, decimation, glTF export — all scriptable. The one tool that covers the span. |
+| **trimesh** | `pip install trimesh`. Load anything, measure it, convert it. The tool for *measure, don't guess*. |
+| **gltf-transform** | `npm i -g @gltf-transform/cli`. Inspect, weld, dedupe, simplify, resize textures, meshopt/Draco/KTX2. |
+| **gltfpack** | The blunt version of the same. `-mi` gives mesh instancing, which is directly the crowd problem. |
+| **PyMeshLab** | When downloaded models arrive too heavy and need real decimation. |
+
+**Assets can be fetched programmatically.** Poly Haven has a public API and it
+works — `https://api.polyhaven.com/types` returns `["hdris","textures","models"]`,
+and `/assets?type=hdris` lists them. **Everything on it is CC0**, which is the
+licence problem in room-studioVR solved outright. ambientCG is the same shape.
+Combined with gltf-transform that is an asset pipeline with no clicking in it.
+
+**A plausible answer to the audience problem:** MPFB2 (MakeHuman, as a Blender
+add-on, so reachable through `bpy`) for varied bodies → Mixamo for idle clips →
+`gltfpack -mi` for instancing. Every step except Mixamo can be scripted. Not
+proven, but it is the first thing to try.
+
+Also free and scriptable, if the need arises: **OpenSCAD** and **build123d** /
+**CadQuery** for precise parametric geometry (seating rows, raked floors,
+risers), **FreeCAD**, **assimp** for format conversion, and **Godot 4** with
+headless CLI export — though Godot ships to a headset as an APK, which the no
+sideloading constraint rules out.
+
 ## Gotchas carried over from room-studioVR
 
 Every one of these cost real time. They are stack-level, so they will happen
