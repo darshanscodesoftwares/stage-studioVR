@@ -1,0 +1,1425 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>stage-studioVR — M0</title>
+
+<!-- A-Frame 1.7.0 (bundles three.js r173 — verified, not assumed).
+     Single file, no build step. See PROJECT.md. -->
+<script src="https://aframe.io/releases/1.7.0/aframe.min.js"></script>
+
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: #07080c; overflow: hidden;
+               font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+
+  /* ---- The 2D lobby -------------------------------------------------------
+     The microphone MUST be requested here. A permission prompt cannot be
+     raised from inside an immersive WebXR session, so if we do not ask on the
+     flat page, we never get the mic at all. See PROJECT.md. */
+  #lobby {
+    position: fixed; inset: 0; z-index: 9999;
+    display: flex; align-items: center; justify-content: center;
+    background: radial-gradient(ellipse at 50% 35%, #1b2130 0%, #0a0c12 60%, #06070a 100%);
+    color: #e8ecf4; transition: opacity .45s ease; padding: 24px; box-sizing: border-box;
+  }
+  #lobby.gone { opacity: 0; pointer-events: none; }
+
+  .card { width: min(520px, 100%); }
+  .card h1 { margin: 0 0 6px; font-size: 26px; font-weight: 650; letter-spacing: -.02em; }
+  .card .sub { margin: 0 0 26px; font-size: 14.5px; line-height: 1.55; color: #98a2b8; }
+
+  .step { border: 1px solid #232b3d; border-radius: 12px; padding: 16px 18px; margin-bottom: 12px;
+          background: #101521; transition: border-color .3s, background .3s; }
+  .step.done { border-color: #2f6b4a; background: #0f1a15; }
+  .step .lbl { font-size: 11px; letter-spacing: .10em; text-transform: uppercase;
+               color: #6d7a92; margin-bottom: 9px; }
+  .step p { margin: 9px 0 0; font-size: 13px; line-height: 1.5; color: #8b95ab; }
+
+  button { font: inherit; font-size: 14.5px; font-weight: 550; border: 0; border-radius: 9px;
+           padding: 11px 20px; cursor: pointer; background: #3a6ea8; color: #fff;
+           transition: background .2s, opacity .2s; }
+  button:hover:not(:disabled) { background: #4880bd; }
+  button:disabled { opacity: .38; cursor: default; }
+  button.ghost { background: #1c2333; color: #9aa4ba; }
+  button.ghost:hover { background: #253048; }
+  button.go { background: #2f7a52; width: 100%; padding: 14px; font-size: 16px; }
+  button.go:hover:not(:disabled) { background: #38935f; }
+
+  /* live level bar — proof the mic is actually working before the headset goes on */
+  .meter { height: 10px; border-radius: 5px; background: #1a2130; overflow: hidden;
+           margin-top: 13px; position: relative; display: none; }
+  .meter.on { display: block; }
+  .meter i { display: block; height: 100%; width: 0%; border-radius: 5px;
+             background: linear-gradient(90deg, #3f8f68, #63b07e 55%, #c9a94e 78%, #c25a4e); }
+  .readout { font-size: 12px; color: #7c8699; margin-top: 7px;
+             font-variant-numeric: tabular-nums; display: none; }
+  .readout.on { display: block; }
+  .err { color: #d6796d; font-size: 13px; margin-top: 10px; line-height: 1.5; }
+
+  .hint { margin-top: 18px; font-size: 12.5px; color: #66718a; line-height: 1.6; text-align: center; }
+
+  /* ---- Desktop dev panel (hidden in VR) ---------------------------------- */
+  #devpanel {
+    position: fixed; left: 12px; bottom: 12px; z-index: 500;
+    background: rgba(12,15,22,.86); border: 1px solid #222a3a; border-radius: 10px;
+    padding: 11px 13px; color: #c3cbdb; font-size: 12px; display: none;
+    backdrop-filter: blur(6px);
+  }
+  #devpanel.on { display: block; }
+  #devpanel .row { display: flex; align-items: center; gap: 9px; margin: 5px 0; }
+  #devpanel button { padding: 5px 11px; font-size: 12px; border-radius: 6px; }
+  #devpanel .stat { font-variant-numeric: tabular-nums; color: #7f8aa0; }
+  kbd { background: #1e2534; border: 1px solid #2c3547; border-bottom-width: 2px;
+        border-radius: 4px; padding: 1px 5px; font-size: 11px; font-family: inherit; }
+</style>
+</head>
+
+<body>
+
+<!-- ========================================================================
+     LOBBY — mic permission happens here, before VR. Non-negotiable.
+     ===================================================================== -->
+<div id="lobby">
+  <div class="card">
+    <h1>stage-studioVR</h1>
+    <p class="sub">An empty hall, a stage, and a microphone. Walk up, stand behind the
+       lectern, and hear how loud you actually are. The audience comes later.</p>
+
+    <div class="step" id="stepMic">
+      <div class="lbl">Step 1 — microphone</div>
+      <button id="btnMic">Enable microphone</button>
+      <button id="btnSkip" class="ghost">Skip</button>
+      <div class="meter" id="lobbyMeter"><i id="lobbyFill"></i></div>
+      <div class="readout" id="lobbyRead">—</div>
+      <p id="micNote">Must be granted on this page. A headset cannot show a permission
+         prompt once you are inside VR.</p>
+      <div class="err" id="micErr" style="display:none"></div>
+    </div>
+
+    <div class="step" id="stepGo">
+      <div class="lbl">Step 2 — enter</div>
+      <button class="go" id="btnEnter" disabled>Enter the hall</button>
+      <p>In a headset this opens VR. On a desktop it just drops you in —
+         <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> to walk, drag to look.</p>
+    </div>
+
+    <div class="hint">If the VR button does not appear, the page is not on HTTPS.</div>
+  </div>
+</div>
+
+<!-- ========================================================================
+     DESKTOP DEV PANEL
+     ===================================================================== -->
+<div id="devpanel">
+  <div class="row"><button id="btnLights">House lights</button>
+                   <span class="stat" id="lightState">up</span></div>
+  <div class="row"><span class="stat" id="devStats">—</span></div>
+  <div class="row"><span class="stat"><kbd>L</kbd> lights &nbsp; <kbd>R</kbd> reset pose</span></div>
+</div>
+
+<!-- ========================================================================
+     THE SCENE
+     ===================================================================== -->
+<!-- toneMapping is doing real work here. Without it the renderer dumps raw
+     linear values to the screen: ceiling lamps clip to flat white blobs and
+     anything facing away from a light crushes to black. ACES Filmic rolls
+     both ends off the way a camera does. -->
+<a-scene id="scene"
+         background="color: #05060a"
+         renderer="antialias: true; colorManagement: true; highRefreshRate: true;
+                   foveationLevel: 1; toneMapping: ACESFilmic; exposure: 1.35"
+         shadow="type: pcfsoft"
+         webxr="requiredFeatures: local-floor; optionalFeatures: bounded-floor, hand-tracking"
+         xr-mode-ui="enabled: true"
+         sv-hall
+         sv-lighting
+         sv-truss>
+
+  <!-- ---- Rig: everything that moves with the speaker --------------------- -->
+  <!-- Start behind the lectern (which sits at z = -7.6), facing +z down the
+       hall toward where the audience will be. -->
+  <a-entity id="rig" sv-rig sv-snapturn position="0 0.9 -8.15" rotation="0 180 0">
+
+    <a-entity id="head"
+              camera="near: 0.05; far: 120"
+              look-controls="pointerLockEnabled: false; reverseMouseDrag: false"
+              position="0 1.6 0">
+      <!-- HUD lives under the camera but soft-follows, so it drifts rather
+           than being welded to your eyeballs. -->
+    </a-entity>
+
+    <a-entity id="handL" meta-touch-controls="hand: left"></a-entity>
+    <a-entity id="handR" meta-touch-controls="hand: right"></a-entity>
+  </a-entity>
+
+  <!-- ---- HUD: mic meter + frame budget ---------------------------------- -->
+  <a-entity id="hud" sv-hud="distance: 1.35; drop: 0.42; lerp: 0.14">
+    <a-entity id="micMeter" sv-mic-meter></a-entity>
+    <a-entity id="perf" sv-perf position="0 -0.185 0"></a-entity>
+  </a-entity>
+
+</a-scene>
+
+<script>
+/* =========================================================================
+   stage-studioVR — M0
+   -------------------------------------------------------------------------
+   Milestone goal (PROJECT.md): an empty hall that holds 72fps in the headset,
+   a stage you can stand on and walk off, and a live mic level meter.
+   No audience. No models. Nothing downloaded except A-Frame itself.
+
+   Every component here is prefixed `sv-`. A-Frame 1.7.0 registers 58
+   components of its own and a duplicate name throws, which aborts the rest
+   of the script and looks exactly like a lighting bug. The prefix makes a
+   collision impossible.
+   ====================================================================== */
+
+'use strict';
+
+/* =========================================================================
+   1. THE HALL — dimensions in metres, in one place
+   ------------------------------------------------------------------------
+   Layout is deliberately simple: the stage spans the full width of the room
+   and its front edge is a full-width 3-step stair. That removes every awkward
+   corner case (side alleys, 0.9m drops, invisible walls in front of the
+   stage lip) and means the walkable floor height is a pure function of z.
+   ====================================================================== */
+const HALL = {
+  x0: -9, x1: 9,          // side walls
+  z0: -12, z1: 14,        // back wall (behind stage) → rear wall
+  h: 8,                   // ceiling height
+  stageZ: -5,             // front edge of the stage
+  stageY: 0.9,            // stage height
+  wall: 0.4               // body radius kept off the walls
+};
+
+/* Walkable regions, highest first. A position is legal if it falls inside at
+   least one; its floor height is the tallest region containing it. This is a
+   union-of-rectangles, same approach that worked in room-studioVR — it stays
+   correct once seating starts carving holes in the audience floor. */
+const REGIONS = [
+  { id: 'stage',  x0: -8.6, x1: 8.6, z0: -11.6,  z1: -5.000, y: 0.9 },
+  { id: 'treadA', x0: -8.6, x1: 8.6, z0:  -5.000, z1: -4.667, y: 0.6 },
+  { id: 'treadB', x0: -8.6, x1: 8.6, z0:  -4.667, z1: -4.333, y: 0.3 },
+  { id: 'floor',  x0: -8.6, x1: 8.6, z0:  -4.333, z1: 13.6,   y: 0.0 }
+];
+
+function floorAt (x, z) {
+  let best = null;
+  for (let i = 0; i < REGIONS.length; i++) {
+    const r = REGIONS[i];
+    if (x >= r.x0 && x <= r.x1 && z >= r.z0 && z <= r.z1) {
+      if (best === null || r.y > best) { best = r.y; }
+    }
+  }
+  return best;                       // null === not walkable
+}
+
+/* =========================================================================
+   2. ProcTex — textures generated on a canvas at runtime
+   ------------------------------------------------------------------------
+   Nothing to download, nothing that can 404 mid-demo, and a greyscale base
+   multiplies over any colour so one texture serves every paint. Normal maps
+   are derived from the same canvas with a Sobel filter.
+   ====================================================================== */
+const ProcTex = {
+  cache: {},
+
+  /* Build (or fetch) a {map, normalMap} pair for a named generator. */
+  get: function (name, repX, repY) {
+    const key = name + '|' + repX + 'x' + repY;
+    if (this.cache[key]) { return this.cache[key]; }
+
+    const gen = this.gens[name];
+    if (!gen) { console.warn('[sv] no such texture generator:', name); return null; }
+
+    const size = gen.size || 512;
+    const cv = document.createElement('canvas');
+    cv.width = cv.height = size;
+    // willReadFrequently: the noise pass and the Sobel both read this back
+    const ctx = cv.getContext('2d', { willReadFrequently: true });
+    gen.paint(ctx, size, size);
+
+    const map = new THREE.CanvasTexture(cv);
+    map.wrapS = map.wrapT = THREE.RepeatWrapping;
+    map.repeat.set(repX, repY);
+    map.colorSpace = THREE.SRGBColorSpace;
+    map.anisotropy = 4;
+
+    const nm = new THREE.CanvasTexture(this.sobel(cv, gen.bump || 1.6));
+    nm.wrapS = nm.wrapT = THREE.RepeatWrapping;
+    nm.repeat.set(repX, repY);
+
+    const pair = { map: map, normalMap: nm };
+    this.cache[key] = pair;
+    return pair;
+  },
+
+  /* Sobel the luminance of a canvas into a tangent-space normal map. */
+  sobel: function (src, strength) {
+    const w = src.width, h = src.height;
+    const sp = src.getContext('2d', { willReadFrequently: true })
+                  .getImageData(0, 0, w, h).data;
+
+    const lum = new Float32Array(w * h);
+    for (let i = 0; i < w * h; i++) {
+      lum[i] = (sp[i * 4] * 0.299 + sp[i * 4 + 1] * 0.587 + sp[i * 4 + 2] * 0.114) / 255;
+    }
+
+    const out = document.createElement('canvas');
+    out.width = w; out.height = h;
+    const octx = out.getContext('2d');
+    const img = octx.createImageData(w, h);
+    const d = img.data;
+
+    const at = function (x, y) {
+      return lum[((y + h) % h) * w + ((x + w) % w)];
+    };
+
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const gx = (at(x - 1, y - 1) + 2 * at(x - 1, y) + at(x - 1, y + 1)) -
+                   (at(x + 1, y - 1) + 2 * at(x + 1, y) + at(x + 1, y + 1));
+        const gy = (at(x - 1, y - 1) + 2 * at(x, y - 1) + at(x + 1, y - 1)) -
+                   (at(x - 1, y + 1) + 2 * at(x, y + 1) + at(x + 1, y + 1));
+
+        let nx = gx * strength, ny = gy * strength, nz = 1;
+        const len = Math.sqrt(nx * nx + ny * ny + nz * nz);
+        nx /= len; ny /= len; nz /= len;
+
+        const i = (y * w + x) * 4;
+        d[i]     = (nx * 0.5 + 0.5) * 255;
+        d[i + 1] = (ny * 0.5 + 0.5) * 255;
+        d[i + 2] = (nz * 0.5 + 0.5) * 255;
+        d[i + 3] = 255;
+      }
+    }
+    octx.putImageData(img, 0, 0);
+    return out;
+  },
+
+  /* --- helpers --- */
+  noise: function (ctx, w, h, amount, scale) {
+    const img = ctx.getImageData(0, 0, w, h);
+    const d = img.data;
+    const s = scale || 1;
+    for (let y = 0; y < h; y += s) {
+      for (let x = 0; x < w; x += s) {
+        const n = (Math.random() - 0.5) * amount;
+        for (let dy = 0; dy < s && y + dy < h; dy++) {
+          for (let dx = 0; dx < s && x + dx < w; dx++) {
+            const i = ((y + dy) * w + (x + dx)) * 4;
+            d[i] += n; d[i + 1] += n; d[i + 2] += n;
+          }
+        }
+      }
+    }
+    ctx.putImageData(img, 0, 0);
+  },
+
+  gens: {
+    /* Walls — flat plaster with broad mottling and a fine tooth. */
+    plaster: {
+      size: 512, bump: 0.9,
+      paint: function (ctx, w, h) {
+        ctx.fillStyle = '#c8c8c8'; ctx.fillRect(0, 0, w, h);
+        for (let i = 0; i < 90; i++) {
+          const r = 40 + Math.random() * 130;
+          const g = ctx.createRadialGradient(Math.random() * w, Math.random() * h, 0,
+                                             Math.random() * w, Math.random() * h, r);
+          const v = 190 + Math.random() * 45;
+          g.addColorStop(0, 'rgba(' + v + ',' + v + ',' + v + ',0.16)');
+          g.addColorStop(1, 'rgba(' + v + ',' + v + ',' + v + ',0)');
+          ctx.fillStyle = g;
+          ctx.fillRect(0, 0, w, h);
+        }
+        ProcTex.noise(ctx, w, h, 16, 1);
+      }
+    },
+
+    /* Stage deck — dark stained boards running across the stage. */
+    plank: {
+      size: 512, bump: 2.2,
+      paint: function (ctx, w, h) {
+        const rows = 8, ph = h / rows;
+        for (let r = 0; r < rows; r++) {
+          const base = 118 + Math.random() * 34;
+          ctx.fillStyle = 'rgb(' + base + ',' + (base - 6) + ',' + (base - 14) + ')';
+          ctx.fillRect(0, r * ph, w, ph);
+
+          // grain
+          ctx.save();
+          ctx.beginPath(); ctx.rect(0, r * ph, w, ph); ctx.clip();
+          for (let g = 0; g < 26; g++) {
+            const y = r * ph + Math.random() * ph;
+            ctx.strokeStyle = 'rgba(0,0,0,' + (0.03 + Math.random() * 0.07) + ')';
+            ctx.lineWidth = 0.5 + Math.random() * 1.6;
+            ctx.beginPath();
+            ctx.moveTo(0, y);
+            ctx.bezierCurveTo(w * 0.33, y + (Math.random() - 0.5) * 7,
+                              w * 0.66, y + (Math.random() - 0.5) * 7,
+                              w, y + (Math.random() - 0.5) * 4);
+            ctx.stroke();
+          }
+          ctx.restore();
+
+          // board seam
+          ctx.fillStyle = 'rgba(0,0,0,0.42)';
+          ctx.fillRect(0, r * ph, w, 1.6);
+        }
+        ProcTex.noise(ctx, w, h, 10, 1);
+      }
+    },
+
+    /* Audience floor — flat commercial carpet, dense speckle. */
+    carpet: {
+      size: 512, bump: 1.4,
+      paint: function (ctx, w, h) {
+        ctx.fillStyle = '#8e8e8e'; ctx.fillRect(0, 0, w, h);
+        for (let i = 0; i < 26000; i++) {
+          const v = 110 + Math.random() * 80;
+          ctx.fillStyle = 'rgba(' + v + ',' + v + ',' + v + ',0.5)';
+          ctx.fillRect(Math.random() * w, Math.random() * h, 1.7, 1.7);
+        }
+        ProcTex.noise(ctx, w, h, 12, 1);
+      }
+    },
+
+    /* Ceiling — acoustic tile grid with perforations. */
+    acoustic: {
+      size: 512, bump: 1.8,
+      paint: function (ctx, w, h) {
+        ctx.fillStyle = '#b4b4b4'; ctx.fillRect(0, 0, w, h);
+        const cells = 2, cw = w / cells;
+        for (let cy = 0; cy < cells; cy++) {
+          for (let cx = 0; cx < cells; cx++) {
+            ctx.fillStyle = 'rgba(0,0,0,0.10)';
+            ctx.fillRect(cx * cw, cy * cw, cw, 3);
+            ctx.fillRect(cx * cw, cy * cw, 3, cw);
+          }
+        }
+        for (let i = 0; i < 5200; i++) {
+          ctx.fillStyle = 'rgba(70,70,70,0.45)';
+          ctx.beginPath();
+          ctx.arc(Math.random() * w, Math.random() * h, 1.5, 0, 6.284);
+          ctx.fill();
+        }
+        ProcTex.noise(ctx, w, h, 9, 1);
+      }
+    },
+
+    /* Backdrop — heavy stage curtain in vertical folds. A flat rectangle
+       behind the speaker reads as an unfinished wall; folds read as a venue. */
+    curtain: {
+      size: 512, bump: 2.6,
+      paint: function (ctx, w, h) {
+        const folds = 14, fw = w / folds;
+        for (let i = 0; i < folds; i++) {
+          const g = ctx.createLinearGradient(i * fw, 0, (i + 1) * fw, 0);
+          g.addColorStop(0.00, '#4c4c4c');
+          g.addColorStop(0.22, '#d2d2d2');
+          g.addColorStop(0.55, '#8e8e8e');
+          g.addColorStop(1.00, '#3a3a3a');
+          ctx.fillStyle = g;
+          ctx.fillRect(i * fw, 0, fw + 1, h);
+        }
+        // vertical weave so it is not perfectly smooth
+        for (let i = 0; i < 900; i++) {
+          const x = Math.random() * w;
+          ctx.strokeStyle = 'rgba(0,0,0,' + (0.02 + Math.random() * 0.05) + ')';
+          ctx.lineWidth = 0.6 + Math.random();
+          ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x + (Math.random() - 0.5) * 6, h);
+          ctx.stroke();
+        }
+        ProcTex.noise(ctx, w, h, 8, 1);
+      }
+    },
+
+    /* Painted steel — truss, fixture bodies, skirting. */
+    metal: {
+      size: 256, bump: 0.7,
+      paint: function (ctx, w, h) {
+        ctx.fillStyle = '#9a9a9e'; ctx.fillRect(0, 0, w, h);
+        for (let i = 0; i < 340; i++) {
+          const v = 120 + Math.random() * 90;
+          ctx.fillStyle = 'rgba(' + v + ',' + v + ',' + (v + 4) + ',0.25)';
+          ctx.fillRect(Math.random() * w, Math.random() * h,
+                       2 + Math.random() * 22, 1 + Math.random() * 2);
+        }
+        ProcTex.noise(ctx, w, h, 14, 1);
+      }
+    }
+  }
+};
+
+/* =========================================================================
+   3. sv-surface — apply a procedural material to an entity
+   ====================================================================== */
+AFRAME.registerComponent('sv-surface', {
+  schema: {
+    tex:    { default: 'plaster' },
+    color:  { default: '#ffffff' },
+    repeat: { type: 'vec2', default: { x: 1, y: 1 } },
+    rough:  { default: 0.92 },
+    metal:  { default: 0.0 }
+  },
+
+  init: function () {
+    const d = this.data;
+    const pair = ProcTex.get(d.tex, d.repeat.x, d.repeat.y);
+
+    const mat = new THREE.MeshStandardMaterial({
+      color: new THREE.Color(d.color),
+      roughness: d.rough,
+      metalness: d.metal
+    });
+    if (pair) {
+      mat.map = pair.map;
+      mat.normalMap = pair.normalMap;
+      mat.normalScale = new THREE.Vector2(0.7, 0.7);
+    }
+
+    const apply = function (obj) {
+      obj.traverse(function (n) { if (n.isMesh) { n.material = mat; } });
+    };
+
+    if (this.el.getObject3D('mesh')) { apply(this.el.getObject3D('mesh')); }
+    else { this.el.addEventListener('object3dset', function (e) {
+      if (e.detail.type === 'mesh') { apply(e.detail.value); }
+    }); }
+  }
+});
+
+/* =========================================================================
+   4. sv-hall — build the room
+   ------------------------------------------------------------------------
+   Built from primitives in code rather than markup so the dimensions above
+   stay the single source of truth: change HALL and the geometry, the walls
+   and the walkable regions cannot drift apart.
+   ====================================================================== */
+AFRAME.registerComponent('sv-hall', {
+  init: function () {
+    const scene = this.el;
+    const W = HALL.x1 - HALL.x0;          // 18
+    const D = HALL.z1 - HALL.z0;          // 26
+    const cx = (HALL.x0 + HALL.x1) / 2;   // 0
+    const cz = (HALL.z0 + HALL.z1) / 2;   // 1
+
+    const add = function (tag, attrs) {
+      const e = document.createElement(tag);
+      for (const k in attrs) { e.setAttribute(k, attrs[k]); }
+      scene.appendChild(e);
+      return e;
+    };
+
+    /* --- floor (audience half) --- */
+    add('a-box', {
+      position: cx + ' -0.05 ' + cz,
+      width: W, height: 0.1, depth: D,
+      'sv-surface': 'tex: carpet; color: #6f6a72; repeat: 9 13; rough: 0.98'
+    });
+
+    /* --- stage block --- */
+    const stageD = HALL.stageZ - HALL.z0;                 // 7
+    add('a-box', {
+      position: cx + ' ' + (HALL.stageY / 2) + ' ' + (HALL.z0 + stageD / 2),
+      width: W, height: HALL.stageY, depth: stageD,
+      'sv-surface': 'tex: plank; color: #8a7a63; repeat: 10 4; rough: 0.66',
+      shadow: 'cast: false; receive: true'
+    });
+
+    /* --- the stair: full width, three treads --- */
+    const treads = [
+      { top: 0.6, z0: -5.000, z1: -4.667 },
+      { top: 0.3, z0: -4.667, z1: -4.333 }
+    ];
+    treads.forEach(function (t) {
+      const d = t.z1 - t.z0;
+      add('a-box', {
+        position: cx + ' ' + (t.top / 2) + ' ' + ((t.z0 + t.z1) / 2),
+        width: W, height: t.top, depth: d,
+        'sv-surface': 'tex: plank; color: #7d6f5c; repeat: 10 1; rough: 0.7'
+      });
+    });
+
+    /* Stage lip — a lighter nosing so the edge reads clearly from the floor.
+       Purely visual; walking is governed by REGIONS. */
+    add('a-box', {
+      position: cx + ' 0.615 -5.02',
+      width: W, height: 0.035, depth: 0.09,
+      'sv-surface': 'tex: plank; color: #c9b48d; repeat: 10 1; rough: 0.5'
+    });
+
+    /* --- walls --- */
+    const wallMat = 'tex: plaster; color: #6e6e78; repeat: 8 4; rough: 0.95';
+
+    add('a-box', {                                   // back wall (behind stage)
+      position: cx + ' ' + (HALL.h / 2) + ' ' + (HALL.z0 - 0.1),
+      width: W, height: HALL.h, depth: 0.2, 'sv-surface': wallMat
+    });
+    add('a-box', {                                   // rear wall
+      position: cx + ' ' + (HALL.h / 2) + ' ' + (HALL.z1 + 0.1),
+      width: W, height: HALL.h, depth: 0.2, 'sv-surface': wallMat
+    });
+    add('a-box', {                                   // left wall
+      position: (HALL.x0 - 0.1) + ' ' + (HALL.h / 2) + ' ' + cz,
+      width: 0.2, height: HALL.h, depth: D, 'sv-surface': wallMat
+    });
+    add('a-box', {                                   // right wall
+      position: (HALL.x1 + 0.1) + ' ' + (HALL.h / 2) + ' ' + cz,
+      width: 0.2, height: HALL.h, depth: D, 'sv-surface': wallMat
+    });
+
+    /* --- ceiling --- */
+    add('a-box', {
+      position: cx + ' ' + (HALL.h + 0.1) + ' ' + cz,
+      width: W, height: 0.2, depth: D,
+      'sv-surface': 'tex: acoustic; color: #3a3d47; repeat: 7 10; rough: 1'
+    });
+
+    /* --- backdrop: a hung curtain rather than a flat panel --------------- */
+    /* Runs wall to wall — at 15m it left slivers of bare plaster at each
+       edge, which read as an unfinished set rather than as a proscenium. */
+    add('a-box', {
+      position: '0 3.5 -11.72',
+      width: W, height: 6.4, depth: 0.14,
+      'sv-surface': 'tex: curtain; color: #4a1f28; repeat: 7 1; rough: 0.95',
+      shadow: 'cast: false; receive: true'
+    });
+    add('a-box', {                                   // pelmet / top rail
+      position: '0 6.78 -11.62',
+      width: W, height: 0.3, depth: 0.34,
+      'sv-surface': 'tex: metal; color: #26262b; rough: 0.5; metal: 0.6'
+    });
+
+    /* --- architectural detail ------------------------------------------- *
+       All primitives, all cheap. Without it the hall reads as a grey box
+       rather than a room: skirting gives the walls a base, the dado band
+       gives them a scale, and a door tells you the room is somewhere you
+       could have walked into. */
+
+    const skirt = 'tex: metal; color: #35353c; rough: 0.7; metal: 0.15';
+    const dado  = 'tex: acoustic; color: #4a4a55; repeat: 10 1; rough: 0.95';
+
+    // skirting: left, right, rear
+    add('a-box', { position: (HALL.x0 + 0.06) + ' 0.09 ' + cz,
+                   width: 0.12, height: 0.18, depth: D, 'sv-surface': skirt });
+    add('a-box', { position: (HALL.x1 - 0.06) + ' 0.09 ' + cz,
+                   width: 0.12, height: 0.18, depth: D, 'sv-surface': skirt });
+    // rear skirting is split around the doorway rather than running across it
+    add('a-box', { position: '-7.31 0.09 ' + (HALL.z1 - 0.06),
+                   width: 3.38, height: 0.18, depth: 0.12, 'sv-surface': skirt });
+    add('a-box', { position: '2.69 0.09 ' + (HALL.z1 - 0.06),
+                   width: 12.62, height: 0.18, depth: 0.12, 'sv-surface': skirt });
+
+    // acoustic dado band along both side walls
+    add('a-box', { position: (HALL.x0 + 0.07) + ' 1.55 ' + (cz + 2),
+                   width: 0.1, height: 1.5, depth: D - 6, 'sv-surface': dado });
+    add('a-box', { position: (HALL.x1 - 0.07) + ' 1.55 ' + (cz + 2),
+                   width: 0.1, height: 1.5, depth: D - 6, 'sv-surface': dado });
+
+    // door in the rear wall, with a frame and an exit sign over it
+    add('a-box', { position: '-4 1.12 13.88', width: 1.24, height: 2.24, depth: 0.12,
+                   'sv-surface': 'tex: metal; color: #2b2b31; rough: 0.6' });
+    add('a-box', { position: '-4 1.06 13.80', width: 1.02, height: 2.06, depth: 0.06,
+                   'sv-surface': 'tex: plank; color: #6b5b48; repeat: 1 2; rough: 0.6' });
+
+    const exitSign = document.createElement('a-plane');
+    exitSign.setAttribute('position', '-4 2.52 13.74');
+    exitSign.setAttribute('width', 0.52); exitSign.setAttribute('height', 0.17);
+    exitSign.setAttribute('material',
+      'shader: flat; color: #1f7a45; opacity: 0.95; transparent: true');
+    scene.appendChild(exitSign);
+
+
+    /* --- lectern (scale reference; also somewhere to stand) --- */
+    /* The lectern's rear face is turned away from every light in the room and
+       nothing casts bounce, so a dark stain rendered as a black slab from the
+       speaker's side. Lighter timber plus a reading strip of its own fixes it
+       without adding another light to the scene. */
+    const lect = add('a-entity', { position: '0 ' + HALL.stageY + ' -7.6' });
+
+    const lb = document.createElement('a-box');
+    lb.setAttribute('position', '0 0.55 0');
+    lb.setAttribute('width', 0.62); lb.setAttribute('height', 1.1); lb.setAttribute('depth', 0.42);
+    lb.setAttribute('sv-surface', 'tex: plank; color: #8b7659; repeat: 1 2; rough: 0.55');
+    lb.setAttribute('shadow', 'cast: true; receive: true');
+    lect.appendChild(lb);
+
+    const lt = document.createElement('a-box');
+    lt.setAttribute('position', '0 1.13 -0.03');
+    lt.setAttribute('rotation', '-12 0 0');
+    lt.setAttribute('width', 0.7); lt.setAttribute('height', 0.05); lt.setAttribute('depth', 0.5);
+    lt.setAttribute('sv-surface', 'tex: plank; color: #9c866a; repeat: 1 1; rough: 0.45');
+    lt.setAttribute('shadow', 'cast: true; receive: true');
+    lect.appendChild(lt);
+
+    // warm reading strip under the front lip — emissive, so it costs no light
+    const strip = document.createElement('a-plane');
+    strip.setAttribute('position', '0 1.09 0.20');
+    strip.setAttribute('rotation', '-78 0 0');
+    strip.setAttribute('width', 0.52); strip.setAttribute('height', 0.03);
+    strip.setAttribute('material', 'shader: flat; color: #ffd9a0; opacity: 0.9; transparent: true');
+    lect.appendChild(strip);
+
+    /* --- mic on a stand, beside the lectern --- */
+    const stand = add('a-entity', { position: '0.85 ' + HALL.stageY + ' -7.5' });
+    const pole = document.createElement('a-cylinder');
+    pole.setAttribute('position', '0 0.72 0');
+    pole.setAttribute('radius', 0.018); pole.setAttribute('height', 1.44);
+    pole.setAttribute('material', 'color: #2a2a2e; roughness: 0.4; metalness: 0.65');
+    pole.setAttribute('shadow', 'cast: true');
+    stand.appendChild(pole);
+
+    const base = document.createElement('a-cylinder');
+    base.setAttribute('position', '0 0.012 0');
+    base.setAttribute('radius', 0.19); base.setAttribute('height', 0.025);
+    base.setAttribute('material', 'color: #202024; roughness: 0.5; metalness: 0.6');
+    stand.appendChild(base);
+
+    const cap = document.createElement('a-sphere');
+    cap.setAttribute('position', '0 1.47 0.03');
+    cap.setAttribute('radius', 0.045);
+    cap.setAttribute('material', 'color: #17171a; roughness: 0.75');
+    stand.appendChild(cap);
+
+    console.log('[sv] hall built');
+  }
+});
+
+/* =========================================================================
+   5. sv-lighting — house lights vs stage lights
+   ------------------------------------------------------------------------
+   This is the difficulty dial PROJECT.md flags as possibly the most useful
+   switch in the app: stage lights in your eyes are EASY (you cannot see
+   faces); house lights up is HARD.
+   ====================================================================== */
+AFRAME.registerComponent('sv-lighting', {
+  init: function () {
+    const scene = this.el;
+    this.house = [];
+    this.stage = [];
+    const self = this;
+
+    const add = function (attrs, bucket) {
+      const e = document.createElement('a-entity');
+      for (const k in attrs) { e.setAttribute(k, attrs[k]); }
+      scene.appendChild(e);
+      bucket.push(e);
+      return e;
+    };
+
+    /* ---- LIGHT UNITS, read this before touching any intensity ------------
+       three.js r155 removed legacy light units, so r173 is physically based:
+       a point/spot light's contribution falls off as intensity / distance^decay.
+       A ceiling lamp 7m above the floor with `intensity: 0.5` therefore
+       delivers 0.5/49 ≈ 0.01 — visually black. Punctual lights now need
+       values in the tens or hundreds (candela), while hemisphere/ambient/
+       directional lights are undimmed by distance and stay in the 0–3 range.
+       Mixing the two scales up is what made the first render look unlit.
+       ------------------------------------------------------------------- */
+
+    /* Ambient base — always on, so it is never pitch black. */
+    this.amb = document.createElement('a-entity');
+    this.amb.setAttribute('light',
+      'type: hemisphere; color: #b9c4d8; groundColor: #4b4239; intensity: 0.55');
+    scene.appendChild(this.amb);
+
+    /* House lights — ceiling over the audience.
+       intensity ≈ target_irradiance * distance^2 → 1.5 * 7.2^2 ≈ 78 */
+    [-1, 3, 8, 12].forEach(function (z) {
+      add({ light: 'type: point; color: #ffeeda; intensity: 96; distance: 0; decay: 2',
+            position: '0 7.2 ' + z }, self.house);
+    });
+
+    /* Stage wash — front-of-house spots pointed back at the speaker.
+       The aim targets must exist AND carry their ids before the lights are
+       created: the light component resolves its `target` selector during
+       init, and a selector that matches nothing leaves the spot aimed at the
+       world origin — which is out in the audience, not on the stage. */
+    add({ id: 'svT1', position: '-2.2 1.2 -8' }, []);
+    add({ id: 'svT2', position: '2.2 1.2 -8' }, []);
+
+    /* Throw is ~12.7m, so intensity ≈ 3 * 12.7^2 ≈ 480 for a solid wash.
+       Only the first spot casts shadows: one 1024 map over the stage alone is
+       affordable and is all that is needed to stop the lectern, the mic stand
+       and eventually the speaker from floating. The audience will never cast
+       — see the brief. */
+    add({ light: 'type: spot; color: #fff0d2; intensity: 480; angle: 34; penumbra: 0.5; ' +
+                 'distance: 0; decay: 2; target: #svT1; castShadow: true; ' +
+                 'shadowMapWidth: 1024; shadowMapHeight: 1024; shadowBias: -0.0012; ' +
+                 'shadowCameraNear: 2; shadowCameraFar: 26; shadowRadius: 2',
+          position: '-4.5 6.4 1.5' }, this.stage);
+    add({ light: 'type: spot; color: #fff0d2; intensity: 480; angle: 34; penumbra: 0.5; ' +
+                 'distance: 0; decay: 2; target: #svT2',
+          position: '4.5 6.4 1.5' }, this.stage);
+
+    this.housOn = true;
+    this.setHouse(true);
+  },
+
+  setHouse: function (on) {
+    this.housOn = on;
+    this.house.forEach(function (e) {
+      e.setAttribute('light', 'intensity', on ? 96 : 0);
+    });
+    this.amb.setAttribute('light', 'intensity', on ? 0.55 : 0.08);
+    /* With the house down the stage wash carries the whole room, so it goes
+       up, not down — that is the point of the easy mode: lit speaker, dark
+       auditorium, no faces to see. */
+    this.stage.forEach(function (e) {
+      e.setAttribute('light', 'intensity', on ? 340 : 620);
+    });
+
+    const st = document.getElementById('lightState');
+    if (st) { st.textContent = on ? 'up (hard)' : 'down (easy)'; }
+  },
+
+  toggle: function () { this.setHouse(!this.housOn); }
+});
+
+/* =========================================================================
+   5b. sv-truss — overhead lighting rig
+   ------------------------------------------------------------------------
+   Two bars of hanging fixtures above the stage. This is what makes the room
+   read as a venue rather than a grey box, and it is deliberately built with
+   THREE.InstancedMesh: fourteen fixtures cost ONE draw call instead of
+   fourteen. That is a small rehearsal of the technique the audience will
+   live or die by — see the crowd section of the brief.
+   ====================================================================== */
+AFRAME.registerComponent('sv-truss', {
+  init: function () {
+    const root = new THREE.Group();
+    this.el.object3D.add(root);
+
+    const barZ = [-6.4, -9.6];
+    const barY = 6.35;
+    const xs = [-6.6, -4.4, -2.2, 0, 2.2, 4.4, 6.6];
+
+    /* --- the bars themselves: one mesh each --- */
+    const barTex = ProcTex.get('metal', 8, 1);
+    const barMat = new THREE.MeshStandardMaterial({
+      color: new THREE.Color('#2c2c32'), roughness: 0.55, metalness: 0.55
+    });
+    if (barTex) { barMat.map = barTex.map; barMat.normalMap = barTex.normalMap; }
+
+    const barGeo = new THREE.BoxGeometry(16.8, 0.26, 0.26);
+    barZ.forEach(function (z) {
+      const m = new THREE.Mesh(barGeo, barMat);
+      m.position.set(0, barY, z);
+      root.add(m);
+    });
+
+    /* --- drops to the ceiling: one instanced mesh --- */
+    const dropLen = (HALL.h - barY);
+    const dropGeo = new THREE.CylinderGeometry(0.022, 0.022, dropLen, 6);
+    const drops = new THREE.InstancedMesh(dropGeo, barMat, barZ.length * 3);
+    const dummy = new THREE.Object3D();
+    let di = 0;
+    barZ.forEach(function (z) {
+      [-6.6, 0, 6.6].forEach(function (x) {
+        dummy.position.set(x, barY + dropLen / 2, z);
+        dummy.quaternion.identity();
+        dummy.scale.set(1, 1, 1);
+        dummy.updateMatrix();
+        drops.setMatrixAt(di++, dummy.matrix);
+      });
+    });
+    drops.instanceMatrix.needsUpdate = true;
+    root.add(drops);
+
+    /* --- fixtures: bodies and lenses, one instanced mesh each --- */
+    const count = xs.length * barZ.length;
+
+    const bodyGeo = new THREE.CylinderGeometry(0.085, 0.118, 0.30, 10);
+    const bodyMat = new THREE.MeshStandardMaterial({
+      color: new THREE.Color('#1b1b20'), roughness: 0.5, metalness: 0.6
+    });
+    const bodies = new THREE.InstancedMesh(bodyGeo, bodyMat, count);
+
+    /* Lens is flat and NOT tone mapped, so it keeps its punch as a source
+       rather than being rolled off with the rest of the highlights. */
+    const lensGeo = new THREE.CircleGeometry(0.082, 12);
+    const lensMat = new THREE.MeshBasicMaterial({ color: new THREE.Color('#ffdca8') });
+    lensMat.toneMapped = false;
+    const lenses = new THREE.InstancedMesh(lensGeo, lensMat, count);
+
+    const up = new THREE.Vector3(0, 1, 0);
+    const fwd = new THREE.Vector3(0, 0, 1);
+    const pos = new THREE.Vector3();
+    const aim = new THREE.Vector3();
+    const dir = new THREE.Vector3();
+    const q = new THREE.Quaternion();
+
+    let i = 0;
+    barZ.forEach(function (z) {
+      xs.forEach(function (x) {
+        pos.set(x, barY - 0.30, z);
+        // each fixture leans toward the centreline of the stage
+        aim.set(x * 0.45, 1.3, z + 2.2);
+        dir.copy(aim).sub(pos).normalize();
+
+        // the cylinder's length runs along local +Y, so point local -Y at the aim
+        q.setFromUnitVectors(up, dir.clone().negate());
+        dummy.position.copy(pos);
+        dummy.quaternion.copy(q);
+        dummy.scale.set(1, 1, 1);
+        dummy.updateMatrix();
+        bodies.setMatrixAt(i, dummy.matrix);
+
+        // the lens sits on the fixture's business end, facing the same way
+        q.setFromUnitVectors(fwd, dir);
+        dummy.position.copy(pos).addScaledVector(dir, 0.152);
+        dummy.quaternion.copy(q);
+        dummy.updateMatrix();
+        lenses.setMatrixAt(i, dummy.matrix);
+
+        i++;
+      });
+    });
+    bodies.instanceMatrix.needsUpdate = true;
+    lenses.instanceMatrix.needsUpdate = true;
+    root.add(bodies);
+    root.add(lenses);
+
+    console.log('[sv] truss: ' + count + ' fixtures in 2 instanced draw calls');
+  }
+});
+
+/* =========================================================================
+   6. Mic — getUserMedia → AnalyserNode → RMS
+   ------------------------------------------------------------------------
+   autoGainControl MUST be off. It is on by default and it silently
+   normalises loudness, which would make every volume reading a lie — the
+   single most important metric in the app.
+   ====================================================================== */
+const Mic = {
+  ready: false, denied: false, err: '',
+  ctx: null, analyser: null, buf: null,
+  rms: 0, db: -90, level: 0, peak: 0, peakAt: 0,
+
+  enable: function () {
+    const self = this;
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      this.denied = true;
+      this.err = 'This browser exposes no microphone API. Almost always because the ' +
+                 'page is not on HTTPS — getUserMedia needs a secure context.';
+      return Promise.reject(new Error(this.err));
+    }
+
+    return navigator.mediaDevices.getUserMedia({
+      audio: {
+        echoCancellation: false,
+        noiseSuppression: false,
+        autoGainControl: false      // see note above — non-negotiable
+      }
+    }).then(function (stream) {
+      self.stream = stream;
+      const AC = window.AudioContext || window.webkitAudioContext;
+      self.ctx = new AC();
+      const src = self.ctx.createMediaStreamSource(stream);
+      self.analyser = self.ctx.createAnalyser();
+      self.analyser.fftSize = 2048;
+      self.analyser.smoothingTimeConstant = 0.25;
+      src.connect(self.analyser);
+      self.buf = new Float32Array(self.analyser.fftSize);
+      self.ready = true;
+
+      const t = stream.getAudioTracks()[0];
+      console.log('[sv] mic live:', t ? t.label || '(unlabelled)' : '?');
+      return true;
+    }).catch(function (e) {
+      self.denied = true;
+      self.err = (e && e.name === 'NotAllowedError')
+        ? 'Permission refused. Reload and allow the microphone — it cannot be asked for once VR has started.'
+        : ('Microphone unavailable: ' + (e && e.message ? e.message : e));
+      console.warn('[sv] mic failed:', e);
+      throw e;
+    });
+  },
+
+  /* Resume the context — browsers suspend it on tab/session transitions,
+     and entering VR counts. */
+  resume: function () {
+    if (this.ctx && this.ctx.state === 'suspended') { this.ctx.resume(); }
+  },
+
+  sample: function (now) {
+    if (!this.ready) { return; }
+    this.analyser.getFloatTimeDomainData(this.buf);
+
+    let sum = 0;
+    for (let i = 0; i < this.buf.length; i++) { sum += this.buf[i] * this.buf[i]; }
+    this.rms = Math.sqrt(sum / this.buf.length);
+    this.db = 20 * Math.log10(this.rms + 1e-9);
+
+    // -60dB .. -6dB mapped to 0..1 — the useful range for a speaking voice
+    this.level = Math.max(0, Math.min(1, (this.db + 60) / 54));
+
+    if (this.level >= this.peak) { this.peak = this.level; this.peakAt = now; }
+    else if (now - this.peakAt > 900) { this.peak = Math.max(this.level, this.peak - 0.012); }
+  },
+
+  /* Coaching verdict. Thresholds are provisional — they need calibrating
+     against a real room before they mean anything. */
+  verdict: function () {
+    if (!this.ready) { return { text: 'NO MIC', color: '#6b7280' }; }
+    if (this.db < -52) { return { text: 'SILENT',    color: '#5b6478' }; }
+    if (this.db < -38) { return { text: 'TOO QUIET', color: '#c9a94e' }; }
+    if (this.db < -12) { return { text: 'GOOD',      color: '#63b07e' }; }
+    return { text: 'LOUD', color: '#c25a4e' };
+  }
+};
+
+/* =========================================================================
+   7. sv-hud — soft-follow panel
+   ------------------------------------------------------------------------
+   Welding a panel to the camera makes people ill. This lerps toward a spot
+   in front of the head, so it drifts into place and settles.
+   ====================================================================== */
+AFRAME.registerComponent('sv-hud', {
+  schema: {
+    distance: { default: 1.35 },
+    drop:     { default: 0.42 },
+    lerp:     { default: 0.14 }
+  },
+
+  init: function () {
+    this.cam = null;
+    this.tPos = new THREE.Vector3();
+    this.tQuat = new THREE.Quaternion();
+    this.fwd = new THREE.Vector3();
+    this.snapped = false;
+  },
+
+  tick: function (t, dt) {
+    if (!this.cam) {
+      this.cam = this.el.sceneEl.camera;
+      if (!this.cam) { return; }
+    }
+    const o = this.el.object3D;
+    const cam = this.cam;
+
+    cam.getWorldPosition(this.tPos);
+    cam.getWorldQuaternion(this.tQuat);
+
+    // forward, flattened so the panel does not fly up when you look at the ceiling
+    this.fwd.set(0, 0, -1).applyQuaternion(this.tQuat);
+    this.fwd.y *= 0.35;
+    this.fwd.normalize();
+
+    this.tPos.addScaledVector(this.fwd, this.data.distance);
+    this.tPos.y -= this.data.drop;
+
+    if (!this.snapped) {
+      o.position.copy(this.tPos);
+      o.quaternion.copy(this.tQuat);
+      this.snapped = true;
+      return;
+    }
+
+    const k = 1 - Math.pow(1 - this.data.lerp, (dt || 16) / 16);
+    o.position.lerp(this.tPos, k);
+    o.quaternion.slerp(this.tQuat, k);
+  }
+});
+
+/* =========================================================================
+   8. sv-mic-meter — the level meter itself
+   ====================================================================== */
+AFRAME.registerComponent('sv-mic-meter', {
+  schema: { width: { default: 0.86 }, height: { default: 0.052 } },
+
+  init: function () {
+    const W = this.data.width, H = this.data.height;
+    const mk = function (tag, attrs, parent) {
+      const e = document.createElement(tag);
+      for (const k in attrs) { e.setAttribute(k, attrs[k]); }
+      parent.appendChild(e);
+      return e;
+    };
+    const root = this.el;
+
+    /* backing plate */
+    mk('a-plane', {
+      width: W + 0.12, height: 0.26,
+      position: '0 0 -0.004',
+      material: 'color: #0b0e15; opacity: 0.72; transparent: true; shader: flat; side: double'
+    }, root);
+
+    /* track */
+    mk('a-plane', {
+      width: W, height: H, position: '0 -0.028 0',
+      material: 'color: #1b2231; shader: flat; side: double'
+    }, root);
+
+    /* fill — scaled from the left edge each frame */
+    this.fill = mk('a-plane', {
+      width: 1, height: H, position: (-W / 2) + ' -0.028 0.001',
+      material: 'color: #63b07e; shader: flat; side: double'
+    }, root);
+    this.fill.object3D.scale.set(0.0001, 1, 1);
+
+    /* peak-hold tick */
+    this.peak = mk('a-plane', {
+      width: 0.008, height: H + 0.016, position: (-W / 2) + ' -0.028 0.002',
+      material: 'color: #eef2f8; shader: flat; side: double'
+    }, root);
+
+    /* zone marks at the two thresholds the verdict uses */
+    const self = this;
+    [[-38, '#c9a94e'], [-12, '#c25a4e']].forEach(function (m) {
+      const x = -W / 2 + W * Math.max(0, Math.min(1, (m[0] + 60) / 54));
+      mk('a-plane', {
+        width: 0.004, height: H + 0.03, position: x + ' -0.028 0.0005',
+        material: 'color: ' + m[1] + '; opacity: 0.55; transparent: true; shader: flat; side: double'
+      }, root);
+    });
+
+    /* Labels. `anchor` must be stated: the text block is centred on the
+       entity by default, so a left-aligned label at the bar's left edge
+       hangs half a block off the panel. */
+    this.label = mk('a-entity', {
+      position: (-W / 2) + ' 0.055 0.001',
+      text: 'value: NO MIC; color: #8a94a8; width: 0.95; align: left; ' +
+            'anchor: left; baseline: center'
+    }, root);
+
+    this.dbTxt = mk('a-entity', {
+      position: (W / 2) + ' 0.055 0.001',
+      text: 'value: --.- dB; color: #5f6a80; width: 0.82; align: right; ' +
+            'anchor: right; baseline: center'
+    }, root);
+
+    this.W = W;
+    this.lastLabel = '';
+  },
+
+  tick: function (t) {
+    Mic.sample(t);
+
+    const lv = Mic.ready ? Mic.level : 0;
+    this.fill.object3D.scale.x = Math.max(0.0001, lv * this.W);
+    this.fill.object3D.position.x = -this.W / 2 + (lv * this.W) / 2;
+
+    this.peak.object3D.position.x = -this.W / 2 + Mic.peak * this.W;
+    this.peak.object3D.visible = Mic.ready && Mic.peak > 0.02;
+
+    const v = Mic.verdict();
+    if (v.text !== this.lastLabel) {
+      this.label.setAttribute('text', 'value', v.text);
+      this.label.setAttribute('text', 'color', v.color);
+      this.fill.setAttribute('material', 'color', v.color);
+      this.lastLabel = v.text;
+    }
+
+    // the dB readout only needs a few updates a second
+    if (!this.nextDb || t > this.nextDb) {
+      this.nextDb = t + 120;
+      this.dbTxt.setAttribute('text', 'value',
+        Mic.ready ? (Mic.db > -89 ? Mic.db.toFixed(1) : '-inf') + ' dB' : 'no signal');
+    }
+  }
+});
+
+/* =========================================================================
+   9. sv-perf — the frame budget, visible inside the headset
+   ------------------------------------------------------------------------
+   M0 exists to answer one question: does an empty hall hold 72fps on the
+   device? That has to be readable while wearing it, not inferred afterwards.
+   ====================================================================== */
+AFRAME.registerComponent('sv-perf', {
+  init: function () {
+    this.txt = document.createElement('a-entity');
+    this.txt.setAttribute('text',
+      'value: measuring...; color: #5f6a80; width: 0.72; align: center; ' +
+      'baseline: center');
+    this.el.appendChild(this.txt);
+
+    this.frames = 0;
+    this.acc = 0;
+    this.next = 0;
+    this.fps = 0;
+  },
+
+  tick: function (t, dt) {
+    this.frames++;
+    this.acc += dt;
+
+    if (t < this.next) { return; }
+    this.next = t + 500;
+
+    this.fps = this.acc > 0 ? (this.frames * 1000 / this.acc) : 0;
+    this.frames = 0; this.acc = 0;
+
+    const info = this.el.sceneEl.renderer.info.render;
+    const tris = info.triangles;
+    const line = Math.round(this.fps) + ' fps   ' +
+                 info.calls + ' calls   ' +
+                 (tris > 9999 ? (tris / 1000).toFixed(1) + 'k' : tris) + ' tris';
+
+    this.txt.setAttribute('text', 'value', line);
+    this.txt.setAttribute('text', 'color',
+      this.fps >= 70 ? '#5b7a68' : this.fps >= 55 ? '#8a7a4e' : '#a05a50');
+
+    const ds = document.getElementById('devStats');
+    if (ds) { ds.textContent = line; }
+  }
+});
+
+/* =========================================================================
+   10. sv-rig — locomotion over the walkable regions
+   ------------------------------------------------------------------------
+   One movement path shared by keyboard and thumbstick, so collision and
+   floor height can never disagree between desktop and headset.
+   ====================================================================== */
+AFRAME.registerComponent('sv-rig', {
+  schema: {
+    speed:   { default: 2.1 },     // m/s — deliberately walking pace
+    stepLerp:{ default: 9.0 }      // how fast the eye height catches a step
+  },
+
+  init: function () {
+    const self = this;
+    this.keys = {};
+    this.stick = { x: 0, y: 0 };
+    this.yNow = this.el.object3D.position.y;
+    this.home = this.el.object3D.position.clone();
+    this.homeRotY = this.el.object3D.rotation.y;
+
+    this.dir = new THREE.Vector3();
+    this.fwd = new THREE.Vector3();
+    this.right = new THREE.Vector3();
+    this.camQ = new THREE.Quaternion();
+
+    window.addEventListener('keydown', function (e) {
+      self.keys[e.code] = true;
+      if (e.code === 'KeyR') { self.reset(); }
+    });
+    window.addEventListener('keyup', function (e) { self.keys[e.code] = false; });
+    window.addEventListener('blur', function () { self.keys = {}; });
+
+    /* left thumbstick → walk */
+    const bindStick = function () {
+      const hand = document.getElementById('handL');
+      if (!hand) { return; }
+      hand.addEventListener('thumbstickmoved', function (e) {
+        self.stick.x = e.detail.x;
+        self.stick.y = e.detail.y;
+      });
+    };
+    if (this.el.sceneEl.hasLoaded) { bindStick(); }
+    else { this.el.sceneEl.addEventListener('loaded', bindStick); }
+  },
+
+  reset: function () {
+    this.el.object3D.position.copy(this.home);
+    this.el.object3D.rotation.y = this.homeRotY;
+    this.yNow = this.home.y;
+  },
+
+  tick: function (time, dt) {
+    const d = Math.min(dt || 16, 50) / 1000;
+    const o = this.el.object3D;
+    const k = this.keys;
+
+    let ix = 0, iz = 0;
+    if (k.KeyW || k.ArrowUp)    { iz -= 1; }
+    if (k.KeyS || k.ArrowDown)  { iz += 1; }
+    if (k.KeyA || k.ArrowLeft)  { ix -= 1; }
+    if (k.KeyD || k.ArrowRight) { ix += 1; }
+
+    if (Math.abs(this.stick.x) > 0.15) { ix += this.stick.x; }
+    if (Math.abs(this.stick.y) > 0.15) { iz += this.stick.y; }
+
+    if (ix !== 0 || iz !== 0) {
+      const len = Math.hypot(ix, iz);
+      ix /= len; iz /= len;
+
+      /* Move relative to where the head is looking, not where the rig faces —
+         otherwise turning your head in VR does not change your walk direction. */
+      const cam = this.el.sceneEl.camera;
+      if (cam) { cam.getWorldQuaternion(this.camQ); }
+      else { this.camQ.copy(o.quaternion); }
+
+      this.fwd.set(0, 0, -1).applyQuaternion(this.camQ); this.fwd.y = 0; this.fwd.normalize();
+      this.right.set(1, 0, 0).applyQuaternion(this.camQ); this.right.y = 0; this.right.normalize();
+
+      const step = this.data.speed * d;
+      const dx = (this.right.x * ix + this.fwd.x * -iz) * step;
+      const dz = (this.right.z * ix + this.fwd.z * -iz) * step;
+
+      const px = o.position.x, pz = o.position.z;
+
+      /* full move, then slide along whichever axis still works */
+      let ny = floorAt(px + dx, pz + dz);
+      if (ny !== null) {
+        o.position.x = px + dx; o.position.z = pz + dz;
+      } else {
+        ny = floorAt(px + dx, pz);
+        if (ny !== null) { o.position.x = px + dx; }
+        else {
+          ny = floorAt(px, pz + dz);
+          if (ny !== null) { o.position.z = pz + dz; }
+        }
+      }
+    }
+
+    /* Ease the eye height so a 0.3m step reads as stepping up rather than
+       teleporting up. */
+    const target = floorAt(o.position.x, o.position.z);
+    if (target !== null) {
+      const a = 1 - Math.exp(-this.data.stepLerp * d);
+      this.yNow += (target - this.yNow) * a;
+      o.position.y = this.yNow;
+    }
+  }
+});
+
+/* =========================================================================
+   11. sv-snapturn — right thumbstick, 30° steps
+   ====================================================================== */
+AFRAME.registerComponent('sv-snapturn', {
+  schema: { angle: { default: 30 }, deadzone: { default: 0.65 } },
+
+  init: function () {
+    const self = this;
+    this.latched = false;
+
+    const bind = function () {
+      const handR = document.getElementById('handR');
+      const handL = document.getElementById('handL');
+
+      if (handR) {
+        handR.addEventListener('thumbstickmoved', function (e) {
+          const x = e.detail.x;
+          if (Math.abs(x) < 0.25) { self.latched = false; return; }
+          if (self.latched || Math.abs(x) < self.data.deadzone) { return; }
+          self.turn(x > 0 ? -1 : 1);
+          self.latched = true;
+        });
+      }
+
+      /* A (right hand) or X (left hand) toggles the house lights — the
+         difficulty dial, reachable without a menu. */
+      const toggleLights = function () {
+        const l = self.el.sceneEl.components['sv-lighting'];
+        if (l) { l.toggle(); }
+      };
+      if (handR) { handR.addEventListener('abuttondown', toggleLights); }
+      if (handL) { handL.addEventListener('xbuttondown', toggleLights); }
+    };
+
+    if (this.el.sceneEl.hasLoaded) { bind(); }
+    else { this.el.sceneEl.addEventListener('loaded', bind); }
+  },
+
+  turn: function (sign) {
+    this.el.object3D.rotation.y += sign * this.data.angle * Math.PI / 180;
+  }
+});
+
+/* =========================================================================
+   12. Boot — lobby wiring
+   ====================================================================== */
+(function () {
+  const lobby   = document.getElementById('lobby');
+  const btnMic  = document.getElementById('btnMic');
+  const btnSkip = document.getElementById('btnSkip');
+  const btnEnter= document.getElementById('btnEnter');
+  const meter   = document.getElementById('lobbyMeter');
+  const fill    = document.getElementById('lobbyFill');
+  const read    = document.getElementById('lobbyRead');
+  const errBox  = document.getElementById('micErr');
+  const stepMic = document.getElementById('stepMic');
+  const scene   = document.getElementById('scene');
+
+  function armEnter () { btnEnter.disabled = false; }
+
+  btnMic.addEventListener('click', function () {
+    btnMic.disabled = true;
+    btnMic.textContent = 'Asking…';
+
+    Mic.enable().then(function () {
+      btnMic.textContent = 'Microphone live';
+      btnSkip.style.display = 'none';
+      stepMic.classList.add('done');
+      meter.classList.add('on');
+      read.classList.add('on');
+      document.getElementById('micNote').textContent =
+        'Working. Say something and watch the bar — that is the same signal the meter uses in VR.';
+      armEnter();
+      pumpLobby();
+    }).catch(function () {
+      btnMic.disabled = false;
+      btnMic.textContent = 'Try again';
+      errBox.style.display = 'block';
+      errBox.textContent = Mic.err;
+      armEnter();                       // never hard-block entry
+    });
+  });
+
+  btnSkip.addEventListener('click', function () {
+    stepMic.classList.add('done');
+    document.getElementById('micNote').textContent =
+      'Skipped. The meter will show NO MIC — reload to ask again.';
+    armEnter();
+  });
+
+  /* live bar on the flat page */
+  function pumpLobby () {
+    if (lobby.classList.contains('gone')) { return; }
+    Mic.sample(performance.now());
+    fill.style.width = (Mic.level * 100).toFixed(1) + '%';
+    const v = Mic.verdict();
+    read.textContent = v.text + '  ·  ' + (Mic.db > -89 ? Mic.db.toFixed(1) : '-inf') + ' dB';
+    requestAnimationFrame(pumpLobby);
+  }
+
+  btnEnter.addEventListener('click', function () {
+    Mic.resume();
+    lobby.classList.add('gone');
+    document.getElementById('devpanel').classList.add('on');
+    setTimeout(function () { lobby.style.display = 'none'; }, 500);
+
+    /* If a headset is present, go straight in. enterVR() must be called from
+       a user gesture, which this click is. */
+    if (scene.is('vr-mode')) { return; }
+    if (navigator.xr) {
+      navigator.xr.isSessionSupported('immersive-vr').then(function (ok) {
+        if (ok) { scene.enterVR(); }
+      }).catch(function () { /* desktop — stay flat */ });
+    }
+  });
+
+  /* Audio contexts get suspended across session transitions. */
+  scene.addEventListener('enter-vr', function () {
+    Mic.resume();
+    document.getElementById('devpanel').classList.remove('on');
+  });
+  scene.addEventListener('exit-vr', function () {
+    Mic.resume();
+    document.getElementById('devpanel').classList.add('on');
+  });
+
+  /* desktop controls */
+  document.getElementById('btnLights').addEventListener('click', function () {
+    const l = scene.components['sv-lighting'];
+    if (l) { l.toggle(); }
+  });
+  window.addEventListener('keydown', function (e) {
+    if (e.code === 'KeyL') {
+      const l = scene.components['sv-lighting'];
+      if (l) { l.toggle(); }
+    }
+  });
+
+  scene.addEventListener('loaded', function () {
+    console.log('[sv] scene loaded — A-Frame ' + AFRAME.version +
+                ', three r' + AFRAME.THREE.REVISION);
+  });
+})();
+</script>
+</body>
+</html>

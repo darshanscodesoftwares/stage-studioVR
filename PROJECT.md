@@ -1,7 +1,22 @@
 # stage-studioVR — public speaking practice in VR
 
-**Status: planning. Nothing is built yet.** This file is the brief. Read it
-before writing any code, and update it as decisions get made.
+**Status: M0 built, awaiting on-device sign-off.** This file is the brief.
+Read it before writing any code, and update it as decisions get made.
+[README.md](README.md) covers what now exists and how to run it.
+
+Settled since this brief was written, by measurement rather than assumption:
+
+- A-Frame 1.7.0 bundles **three.js r173**, and registers **58** components of
+  its own — `grabbable` among them, as gotcha 1 warned.
+- three r173 uses **physically based light units**. Punctual lights need
+  intensities in the tens or hundreds; hemisphere and ambient stay in the 0–3
+  range. This is a tenth gotcha and it is now in the list below.
+- A furnished-but-empty hall costs **34–39 draw calls and ~5.1k triangles**,
+  with no downloaded assets at all. The headroom for the audience is very
+  large.
+- **Instancing works and is easy.** The overhead lighting rig puts 14 fixtures
+  into 2 draw calls with `THREE.InstancedMesh`, built directly in a component.
+  The crowd plan depends on this technique, and it is now proven in-project.
 
 Sister project to [room-studioVR](../room-studioVR) — same stack, same
 constraints, same working method. Where this file says "as in room-studioVR",
@@ -290,7 +305,21 @@ here too.
 8. **Model node transforms compose.** A mesh node can carry its own rotation
    and offset on top of the accessor bounds. Walk the hierarchy.
 9. **In A-Frame text, a larger `width` means larger glyphs.** Raising it to
-   shrink a label does the opposite.
+   shrink a label does the opposite. Its `anchor` also defaults to centring
+   the whole text block on the entity, so `align: left` alone still hangs half
+   a block off to the left — set `anchor` explicitly.
+10. **three.js r155 removed legacy light units, so r173 is physical.** Point
+    and spot lights fall off as `intensity / distance^decay`; a ceiling lamp
+    7m up at `intensity: 0.5` delivers ~0.01 and the room renders black.
+    Punctual lights want **tens to hundreds**; hemisphere/ambient/directional
+    are not distance-attenuated and stay in the **0–3** range. Mixing the two
+    scales looks exactly like a broken lighting rig. Cost one render cycle in
+    M0 to find.
+11. **Headless virtual time does not drive the Web Audio clock.** Timers
+    fast-forward while audio runs on the real clock, so a series of
+    `setTimeout` samples all read the same buffer and a signal test measures
+    nothing while appearing to pass. Test the analyser maths by stubbing
+    `getFloatTimeDomainData` with a known waveform.
 
 ---
 
@@ -322,3 +351,13 @@ is affordable:
 stand on and walk off, and a live microphone level meter floating in front of
 you.** If the mic permission flow and the frame budget both work, everything
 after that is content.
+
+**Built.** See [README.md](README.md). Verified headless: console clean, hall
+renders in both lighting modes, walkable regions step 0.9 → 0.6 → 0.3 → 0 and
+clamp at every wall, `getUserMedia` opens, and the RMS/dB/verdict maths passes
+17/17 against known waveforms.
+
+**Still open: the 72fps itself.** Frame rate is a property of the headset and
+cannot be measured on a 2012 Intel IGP. The frame counter floats in front of
+you in VR so it can be read while wearing it — that reading is the real M0
+sign-off, and until it exists this milestone is not closed.
