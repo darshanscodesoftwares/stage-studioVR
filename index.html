@@ -114,8 +114,11 @@
 <div id="devpanel">
   <div class="row"><button id="btnLights">House lights</button>
                    <span class="stat" id="lightState">up</span></div>
+  <div class="row"><button id="btnCrowd">Audience +</button>
+                   <span class="stat" id="crowdState">0</span></div>
   <div class="row"><span class="stat" id="devStats">—</span></div>
-  <div class="row"><span class="stat"><kbd>L</kbd> lights &nbsp; <kbd>R</kbd> reset pose</span></div>
+  <div class="row"><span class="stat"><kbd>L</kbd> lights &nbsp; <kbd>C</kbd> audience &nbsp;
+                   <kbd>R</kbd> reset pose</span></div>
 </div>
 
 <!-- ========================================================================
@@ -134,7 +137,8 @@
          xr-mode-ui="enabled: true"
          sv-hall
          sv-lighting
-         sv-truss>
+         sv-truss
+         sv-crowd="preset: 0; triangles: 1800">
 
   <!-- ---- Rig: everything that moves with the speaker --------------------- -->
   <!-- Start behind the lectern (which sits at z = -7.6), facing +z down the
@@ -194,16 +198,56 @@ const HALL = {
   wall: 0.4               // body radius kept off the walls
 };
 
-/* Walkable regions, highest first. A position is legal if it falls inside at
-   least one; its floor height is the tallest region containing it. This is a
-   union-of-rectangles, same approach that worked in room-studioVR — it stays
-   correct once seating starts carving holes in the audience floor. */
-const REGIONS = [
-  { id: 'stage',  x0: -8.6, x1: 8.6, z0: -11.6,  z1: -5.000, y: 0.9 },
-  { id: 'treadA', x0: -8.6, x1: 8.6, z0:  -5.000, z1: -4.667, y: 0.6 },
-  { id: 'treadB', x0: -8.6, x1: 8.6, z0:  -4.667, z1: -4.333, y: 0.3 },
-  { id: 'floor',  x0: -8.6, x1: 8.6, z0:  -4.333, z1: 13.6,   y: 0.0 }
-];
+/* =========================================================================
+   Seating — the shape of the auditorium floor
+   ------------------------------------------------------------------------
+   A flat field of seats reads as wrong even when you cannot name why: real
+   auditoriums RAKE, climbing toward the back so people can see over the row
+   in front, and their rows CURVE so every seat faces the stage. Both are
+   pure arithmetic and both matter more to the look than the chair mesh does.
+
+   This is the single source of truth. The rake platform, the walkable
+   regions, the chairs and the audience all read from it, so they cannot
+   drift apart.
+   ====================================================================== */
+const SEATING = {
+  rowZ0: 0.9, rowGap: 1.00, rows: 13,
+  colX0: -7.6, colGap: 0.66, cols: 24,
+  aisles: [7, 16],          // two gangways
+  rise: 0.15,               // per row, after the first two
+  curveR: 60,               // larger = flatter rows
+  focusZ: -7                // seats turn toward this point on the stage
+};
+
+/* Rows 0 and 1 sit on the flat apron; the rake starts behind them. */
+function rowY (r) { return r <= 1 ? 0 : (r - 1) * SEATING.rise; }
+function rowZ (r) { return SEATING.rowZ0 + r * SEATING.rowGap; }
+
+/* Walkable regions, built from the seating so the rake is walkable and the
+   floor height a step lands on is always the one the chairs are standing on.
+   A position is legal if it falls inside at least one region; its floor
+   height is the tallest region containing it. Union-of-rectangles, the same
+   approach that worked in room-studioVR. */
+const REGIONS = (function () {
+  const R = [
+    { id: 'stage',  x0: -8.6, x1: 8.6, z0: -11.600, z1: -5.000, y: 0.9 },
+    { id: 'treadA', x0: -8.6, x1: 8.6, z0:  -5.000, z1: -4.667, y: 0.6 },
+    { id: 'treadB', x0: -8.6, x1: 8.6, z0:  -4.667, z1: -4.333, y: 0.3 },
+    { id: 'apron',  x0: -8.6, x1: 8.6, z0:  -4.333, z1:  0.400, y: 0.0 }
+  ];
+  const half = SEATING.rowGap / 2;
+  for (let r = 0; r < SEATING.rows; r++) {
+    const z = rowZ(r);
+    R.push({
+      id: 'row' + r,
+      x0: -8.6, x1: 8.6,
+      z0: z - half,
+      z1: (r === SEATING.rows - 1) ? 13.6 : z + half,
+      y: rowY(r)
+    });
+  }
+  return R;
+})();
 
 function floorAt (x, z) {
   let best = null;
@@ -214,6 +258,30 @@ function floorAt (x, z) {
     }
   }
   return best;                       // null === not walkable
+}
+
+/* Seat positions. Two things make this read as an auditorium rather than a
+   grid: the row curves toward the stage, and each seat turns to face it.
+   Height comes from floorAt rather than from rowY, so a chair can never
+   float above or sink into the rake no matter how hard the row curves. */
+function seatList () {
+  const out = [];
+  for (let r = 0; r < SEATING.rows; r++) {
+    const base = rowZ(r);
+    for (let c = 0; c < SEATING.cols; c++) {
+      if (SEATING.aisles.indexOf(c) !== -1) { continue; }
+      const x = SEATING.colX0 + c * SEATING.colGap;
+      const z = base - (x * x) / (2 * SEATING.curveR);   // outer seats swing forward
+      const y = floorAt(x, z);
+      if (y === null) { continue; }
+      /* Local -z is the chair's front, so yaw 0 already faces the stage.
+         Damped, because a real auditorium angles seats less than the pure
+         look-at angle would. */
+      const yaw = Math.atan2(x, z - SEATING.focusZ) * 0.55;
+      out.push({ x: x, y: y, z: z, yaw: yaw, row: r });
+    }
+  }
+  return out;                        // front row first
 }
 
 /* =========================================================================
@@ -436,6 +504,25 @@ const ProcTex = {
       }
     },
 
+    /* Seat upholstery — short pile with a directional sheen. */
+    velour: {
+      size: 256, bump: 1.2,
+      paint: function (ctx, w, h) {
+        ctx.fillStyle = '#9c9c9c'; ctx.fillRect(0, 0, w, h);
+        for (let i = 0; i < 14000; i++) {
+          const v = 120 + Math.random() * 95;
+          ctx.strokeStyle = 'rgba(' + v + ',' + v + ',' + v + ',0.4)';
+          ctx.lineWidth = 0.8;
+          const x = Math.random() * w, y = Math.random() * h;
+          ctx.beginPath();
+          ctx.moveTo(x, y);
+          ctx.lineTo(x + (Math.random() - 0.5) * 2, y + 2 + Math.random() * 2);
+          ctx.stroke();
+        }
+        ProcTex.noise(ctx, w, h, 10, 1);
+      }
+    },
+
     /* Painted steel — truss, fixture bodies, skirting. */
     metal: {
       size: 256, bump: 0.7,
@@ -550,6 +637,38 @@ AFRAME.registerComponent('sv-hall', {
       width: W, height: 0.035, depth: 0.09,
       'sv-surface': 'tex: plank; color: #c9b48d; repeat: 10 1; rough: 0.5'
     });
+
+    /* --- the rake ---------------------------------------------------- *
+       The audience floor climbs toward the back so people can see over the
+       row in front. Built from the same REGIONS the walking code uses, as
+       one InstancedMesh of scaled boxes, so it is a single draw call and it
+       physically cannot disagree with where your feet think the floor is. */
+    const steps = REGIONS.filter(function (r) {
+      return r.id.indexOf('row') === 0 && r.y > 0.001;
+    });
+    if (steps.length) {
+      const stepGeo = new THREE.BoxGeometry(1, 1, 1);
+      const stepTex = ProcTex.get('carpet', 6, 1);
+      const stepMat = new THREE.MeshStandardMaterial({
+        color: new THREE.Color('#6f6a72'), roughness: 0.98
+      });
+      if (stepTex) { stepMat.map = stepTex.map; stepMat.normalMap = stepTex.normalMap; }
+
+      const rake = new THREE.InstancedMesh(stepGeo, stepMat, steps.length);
+      const d = new THREE.Object3D();
+      steps.forEach(function (r, i) {
+        const depth = r.z1 - r.z0;
+        d.position.set(0, r.y / 2, (r.z0 + r.z1) / 2);
+        d.rotation.set(0, 0, 0);
+        d.scale.set(W, r.y, depth);
+        d.updateMatrix();
+        rake.setMatrixAt(i, d.matrix);
+      });
+      rake.instanceMatrix.needsUpdate = true;
+      scene.object3D.add(rake);
+      console.log('[sv] rake: ' + steps.length + ' tiers, back row at ' +
+                  steps[steps.length - 1].y.toFixed(2) + 'm');
+    }
 
     /* --- walls --- */
     const wallMat = 'tex: plaster; color: #6e6e78; repeat: 8 4; rough: 0.95';
@@ -884,6 +1003,434 @@ AFRAME.registerComponent('sv-truss', {
     root.add(lenses);
 
     console.log('[sv] truss: ' + count + ' fixtures in 2 instanced draw calls');
+  }
+});
+
+/* =========================================================================
+   5d. sv-crowd — the crowd lab
+   ------------------------------------------------------------------------
+   This exists to answer open question 1 of the brief, and it answers it
+   WITHOUT downloading or licensing a single model. A skinned figure costs
+   the GPU the same whether it is shaped like a person or like a blob, so
+   the figures here are generated procedurally: a real THREE.SkinnedMesh
+   with a real skeleton, a real AnimationMixer and a real per-frame bone
+   update. The measurement transfers; only the silhouette does not.
+
+   Three tiers, exactly as the brief proposes:
+
+     A  front rows   real skinned meshes    1 draw call + 1 mixer EACH
+     B  middle       one InstancedMesh      1 draw call TOTAL
+     C  back rows    instanced billboards   1 draw call TOTAL
+
+   Ramp the count with the preset control and watch the frame counter. The
+   number where it falls off a cliff is the answer.
+   ====================================================================== */
+
+/* Difficulty ladder from the brief, doubling as the stress ramp. */
+const CROWD_PRESETS = [0, 5, 20, 60, 150, 299];
+const MAX_SKINNED = 8;                 // tier A cap — the eye-contact rows
+const MAX_SOLID   = 40;                // tier B cap
+const SEAT_TOP    = 0.50;              // seat pan height — where a seated body starts
+
+AFRAME.registerComponent('sv-crowd', {
+  schema: {
+    preset:   { default: 0 },
+    triangles:{ default: 1800 }        // per skinned figure; dial to taste
+  },
+
+  init: function () {
+    this.seats = seatList();
+    this.root = new THREE.Group();
+    this.el.object3D.add(this.root);
+
+    this.skinned = [];                 // { mesh, bones, mixer, phase }
+    this.solid = null;
+    this.cards = null;
+    this.clock = 0;
+    this.nextFace = 0;
+
+    this.palette = [
+      '#3d4a63', '#6b4a3f', '#4a5c4a', '#5d4a5e', '#7a6a4a',
+      '#3f5a63', '#63403f', '#4a4a55', '#6a5a3f', '#455a52'
+    ].map(function (h) { return new THREE.Color(h); });
+
+    this.skinTones = ['#e8c39e', '#d8a878', '#b07a4f', '#8a5a35', '#5f3c22']
+      .map(function (h) { return new THREE.Color(h); });
+
+    this.buildChairs();
+    this.apply(this.data.preset);
+    console.log('[sv] crowd lab ready — ' + this.seats.length + ' seats');
+  },
+
+  update: function (old) {
+    if (old && old.preset !== undefined && old.preset !== this.data.preset) {
+      this.apply(this.data.preset);
+    }
+  },
+
+  /* ---------------------------------------------------------------- chairs
+     Four InstancedMeshes cover the whole auditorium regardless of seat count:
+     upholstered pan, upholstered back, side standards, armrests. Chairs never
+     move and never deform, so this stays four draw calls at any capacity.
+
+     The parts matter. A seat pan and a backrest alone read as two floating
+     slabs, which is exactly what the first version looked like — the
+     standards underneath are what put the chair on the floor. */
+  buildChairs: function () {
+    const seats = this.seats;
+    const dummy = new THREE.Object3D();
+    const self = this;
+
+    const velour = ProcTex.get('velour', 1, 1);
+    const cloth = new THREE.MeshStandardMaterial({
+      color: new THREE.Color('#5c2f38'), roughness: 0.95
+    });
+    if (velour) { cloth.map = velour.map; cloth.normalMap = velour.normalMap; }
+
+    const frameTex = ProcTex.get('metal', 1, 1);
+    const frame = new THREE.MeshStandardMaterial({
+      color: new THREE.Color('#23232a'), roughness: 0.55, metalness: 0.45
+    });
+    if (frameTex) { frame.map = frameTex.map; }
+
+    const parts = [
+      // geometry,                                    material, per-seat placements
+      { g: new THREE.BoxGeometry(0.50, 0.09, 0.44), m: cloth, at: [
+          { p: [0, -0.02, 0.02], r: [-0.05, 0, 0] } ] },              // pan
+      { g: new THREE.BoxGeometry(0.50, 0.54, 0.07), m: cloth, at: [
+          { p: [0, 0.29, 0.235], r: [-0.16, 0, 0] } ] },              // back
+      { g: new THREE.BoxGeometry(0.045, 0.44, 0.40), m: frame, at: [
+          { p: [-0.25, -0.24, 0.03], r: [0, 0, 0] },
+          { p: [ 0.25, -0.24, 0.03], r: [0, 0, 0] } ] },              // standards
+      { g: new THREE.BoxGeometry(0.055, 0.05, 0.36), m: frame, at: [
+          { p: [-0.25, 0.06, 0.00], r: [-0.04, 0, 0] },
+          { p: [ 0.25, 0.06, 0.00], r: [-0.04, 0, 0] } ] }            // armrests
+    ];
+
+    const SEAT_H = 0.46;                    // pan height above its own floor
+    const q = new THREE.Quaternion();
+    const off = new THREE.Vector3();
+
+    parts.forEach(function (part) {
+      const inst = new THREE.InstancedMesh(part.g, part.m,
+                                           seats.length * part.at.length);
+      let i = 0;
+      seats.forEach(function (s) {
+        q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), s.yaw);
+        part.at.forEach(function (a) {
+          /* Place the part in the chair's own space, then rotate the whole
+             chair into the row's yaw — otherwise the armrests stay
+             axis-aligned while the seat turns. */
+          off.set(a.p[0], a.p[1], a.p[2]).applyQuaternion(q);
+          dummy.position.set(s.x + off.x, s.y + SEAT_H + off.y, s.z + off.z);
+          dummy.rotation.set(0, 0, 0);
+          dummy.quaternion.copy(q);
+          dummy.rotateX(a.r[0]);
+          dummy.scale.set(1, 1, 1);
+          dummy.updateMatrix();
+          inst.setMatrixAt(i++, dummy.matrix);
+        });
+      });
+      inst.instanceMatrix.needsUpdate = true;
+      self.root.add(inst);
+    });
+  },
+
+  /* ------------------------------------------------- a real skinned figure
+     A tapered cylinder with a 4-bone spine. Triangle count is driven by the
+     schema so we can measure at whatever density a real character would be:
+     ~1.8k for a low-poly figure, ~10k for a proper one. */
+  makeSkinned: function (tris, clothing, skinTone) {
+    const radial = 16;
+    const heightSeg = Math.max(4, Math.round(tris / (radial * 2)));
+    const H = 0.80;                    // seated torso: seat pan to shoulders
+
+    const geo = new THREE.CylinderGeometry(0.16, 0.23, H, radial, heightSeg, true);
+    geo.translate(0, H / 2, 0);
+
+    /* Skin every vertex to the two nearest bones, blended by height — this
+       is what makes the mesh bend at the joints instead of shearing. */
+    const BONES = 4, segH = H / BONES;
+    const pos = geo.attributes.position;
+    const si = [], sw = [];
+    for (let i = 0; i < pos.count; i++) {
+      const t = Math.max(0, Math.min(BONES - 1.001, pos.getY(i) / segH));
+      const b = Math.floor(t), w = t - b;
+      si.push(b, Math.min(b + 1, BONES - 1), 0, 0);
+      sw.push(1 - w, w, 0, 0);
+    }
+    geo.setAttribute('skinIndex', new THREE.Uint16BufferAttribute(si, 4));
+    geo.setAttribute('skinWeight', new THREE.Float32BufferAttribute(sw, 4));
+
+    const bones = [];
+    for (let i = 0; i < BONES; i++) {
+      const b = new THREE.Bone();
+      b.name = 'svb' + i;
+      b.position.y = i === 0 ? 0 : segH;
+      if (i > 0) { bones[i - 1].add(b); }
+      bones.push(b);
+    }
+
+    const mat = new THREE.MeshStandardMaterial({ color: clothing, roughness: 0.9 });
+    const mesh = new THREE.SkinnedMesh(geo, mat);
+    mesh.add(bones[0]);
+    mesh.bind(new THREE.Skeleton(bones));
+    mesh.frustumCulled = true;
+
+    // head, parented to the top bone so it moves with the sway
+    const head = new THREE.Mesh(
+      new THREE.SphereGeometry(0.115, 12, 10),
+      new THREE.MeshStandardMaterial({ color: skinTone, roughness: 0.82 })
+    );
+    head.position.y = segH * 0.9;
+    bones[BONES - 1].add(head);
+
+    return { mesh: mesh, bones: bones };
+  },
+
+  /* An idle clip, driven by a real AnimationMixer so the measurement
+     includes the mixer cost a real Mixamo clip would carry. */
+  makeIdleClip: function () {
+    const q = function (ax, ang) {
+      return new THREE.Quaternion().setFromAxisAngle(ax, ang);
+    };
+    const X = new THREE.Vector3(1, 0, 0), Z = new THREE.Vector3(0, 0, 1);
+    const flat = function (list) {
+      const out = [];
+      list.forEach(function (v) { out.push(v.x, v.y, v.z, v.w); });
+      return out;
+    };
+    const t = [0, 1.4, 2.8, 4.2];
+    return new THREE.AnimationClip('idle', 4.2, [
+      new THREE.QuaternionKeyframeTrack('svb1.quaternion', t,
+        flat([q(X, 0.012), q(Z, 0.026), q(X, -0.014), q(X, 0.012)])),
+      new THREE.QuaternionKeyframeTrack('svb2.quaternion', t,
+        flat([q(Z, -0.02), q(X, 0.03), q(Z, 0.022), q(Z, -0.02)])),
+      new THREE.QuaternionKeyframeTrack('svb3.quaternion', t,
+        flat([q(X, 0.03), q(Z, -0.04), q(X, -0.025), q(X, 0.03)]))
+    ]);
+  },
+
+  /* --------------------------------------------------- billboard texture
+     A seated figure with alpha. One texture, tinted per instance, is all
+     the back rows need — from 15m in dim light nobody can tell. */
+  makeCardTexture: function (kind) {
+    const w = 96, h = 96;
+    const cv = document.createElement('canvas');
+    cv.width = w; cv.height = h;
+    const c = cv.getContext('2d');
+    c.clearRect(0, 0, w, h);
+    c.fillStyle = '#ffffff';
+
+    if (kind === 'head') {
+      c.beginPath();
+      c.ellipse(w * 0.5, h * 0.5, w * 0.34, h * 0.42, 0, 0, 6.284);
+      c.fill();
+    } else {
+      // torso widening to the shoulders
+      c.beginPath();
+      c.moveTo(w * 0.14, h);
+      c.quadraticCurveTo(w * 0.16, h * 0.18, w * 0.5, h * 0.10);
+      c.quadraticCurveTo(w * 0.84, h * 0.18, w * 0.86, h);
+      c.closePath();
+      c.fill();
+    }
+
+    const tex = new THREE.CanvasTexture(cv);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    return tex;
+  },
+
+  /* ------------------------------------------------------------ apply tier
+     Seats fill front to back, so the expensive figures always land where
+     eye contact actually happens. */
+  apply: function (presetIndex) {
+    const total = CROWD_PRESETS[Math.max(0, Math.min(CROWD_PRESETS.length - 1, presetIndex))];
+    this.clear();
+    if (total <= 0) { this.report(0, 0, 0); return; }
+
+    const nSkin = Math.min(total, MAX_SKINNED);
+    const nSolid = Math.min(Math.max(0, total - nSkin), MAX_SOLID);
+    const nCard = Math.max(0, total - nSkin - nSolid);
+
+    const seats = this.seats;
+    const self = this;
+    let seatIdx = 0;
+
+    /* --- tier A: real skinned meshes, one draw call and one mixer each --- */
+    const clip = this.makeIdleClip();
+    for (let i = 0; i < nSkin; i++) {
+      const s = seats[seatIdx++];
+      const fig = this.makeSkinned(
+        this.data.triangles,
+        this.palette[i % this.palette.length],
+        this.skinTones[(i * 3) % this.skinTones.length]
+      );
+      fig.mesh.position.set(s.x, s.y + SEAT_TOP, s.z);
+      fig.mesh.rotation.y = s.yaw;
+      fig.mesh.scale.setScalar(0.92 + (i % 5) * 0.045);
+      this.root.add(fig.mesh);
+
+      const mixer = new THREE.AnimationMixer(fig.mesh);
+      const action = mixer.clipAction(clip);
+      /* Phase offset is not decoration. Two figures playing the same idle in
+         sync destroys the illusion instantly — see the brief. */
+      action.time = (i * 0.9137) % clip.duration;
+      action.play();
+      this.skinned.push({ mixer: mixer, mesh: fig.mesh });
+    }
+
+    /* --- tier B: one InstancedMesh for the whole middle --- */
+    if (nSolid > 0) {
+      const geo = new THREE.CylinderGeometry(0.16, 0.23, 0.80, 10, 1, false);
+      geo.translate(0, 0.40, 0);
+      const mat = new THREE.MeshStandardMaterial({ roughness: 0.9 });
+      const inst = new THREE.InstancedMesh(geo, mat, nSolid);
+
+      const headGeo = new THREE.SphereGeometry(0.115, 8, 6);
+      const headMat = new THREE.MeshStandardMaterial({ roughness: 0.82 });
+      const heads = new THREE.InstancedMesh(headGeo, headMat, nSolid);
+
+      const dummy = new THREE.Object3D();
+      for (let i = 0; i < nSolid; i++) {
+        const s = seats[seatIdx++];
+        const hgt = 0.9 + ((i * 7) % 5) * 0.05;
+        dummy.position.set(s.x, s.y + SEAT_TOP, s.z);
+        dummy.rotation.set(0, s.yaw + ((i * 13) % 7 - 3) * 0.03, 0);
+        dummy.scale.set(1, hgt, 1);
+        dummy.updateMatrix();
+        inst.setMatrixAt(i, dummy.matrix);
+        inst.setColorAt(i, this.palette[(i * 3) % this.palette.length]);
+
+        dummy.position.set(s.x, s.y + SEAT_TOP + 0.80 * hgt + 0.06, s.z);
+        dummy.scale.set(1, 1, 1);
+        dummy.updateMatrix();
+        heads.setMatrixAt(i, dummy.matrix);
+        heads.setColorAt(i, this.skinTones[(i * 2) % this.skinTones.length]);
+      }
+      inst.instanceMatrix.needsUpdate = true;
+      heads.instanceMatrix.needsUpdate = true;
+      if (inst.instanceColor) { inst.instanceColor.needsUpdate = true; }
+      if (heads.instanceColor) { heads.instanceColor.needsUpdate = true; }
+      this.root.add(inst); this.root.add(heads);
+      this.solid = [inst, heads];
+    }
+
+    /* --- tier C: instanced billboards for everything at the back ---------
+       Body and head are separate meshes. One tinted quad per person made the
+       whole back of the room a single flat colour per seat — everybody's
+       face came out the colour of their shirt, which read as a smear rather
+       than as people. Two draw calls buys clothing and skin tone
+       independently, and it is the difference between a crowd and a stain. */
+    if (nCard > 0) {
+      const mkCard = function (tex, w, h, lift) {
+        const geo = new THREE.PlaneGeometry(w, h);
+        geo.translate(0, lift, 0);
+        return new THREE.InstancedMesh(geo, new THREE.MeshStandardMaterial({
+          map: tex, transparent: true, alphaTest: 0.5,
+          side: THREE.DoubleSide, roughness: 0.95
+        }), nCard);
+      };
+
+      const bodies = mkCard(this.makeCardTexture('body'), 0.60, 0.62, 0.31);
+      const heads  = mkCard(this.makeCardTexture('head'), 0.23, 0.25, 0.755);
+
+      const dummy = new THREE.Object3D();
+      this.cardData = [];
+      for (let i = 0; i < nCard && seatIdx < seats.length; i++) {
+        const s = seats[seatIdx++];
+        const hgt = 0.92 + ((i * 11) % 6) * 0.04;
+        dummy.position.set(s.x, s.y + SEAT_TOP, s.z);
+        dummy.rotation.set(0, s.yaw, 0);
+        dummy.scale.set(1, hgt, 1);
+        dummy.updateMatrix();
+        bodies.setMatrixAt(i, dummy.matrix);
+        heads.setMatrixAt(i, dummy.matrix);
+        /* The stride must be coprime with the palette length or the
+           sequence collapses: i*5 over 10 colours yields TWO. Variation
+           matters more than fidelity — see the brief. */
+        bodies.setColorAt(i, this.palette[(i * 7) % this.palette.length]);
+        heads.setColorAt(i, this.skinTones[(i * 3) % this.skinTones.length]);
+        this.cardData.push({ x: s.x, y: s.y, z: s.z, h: hgt });
+      }
+      [bodies, heads].forEach(function (m) {
+        m.instanceMatrix.needsUpdate = true;
+        if (m.instanceColor) { m.instanceColor.needsUpdate = true; }
+        m.count = self.cardData ? self.cardData.length : nCard;
+      });
+      bodies.count = heads.count = this.cardData.length;
+      this.root.add(bodies); this.root.add(heads);
+      this.cards = [bodies, heads];
+    }
+
+    this.report(nSkin, nSolid, this.cardData ? this.cardData.length : 0);
+  },
+
+  report: function (a, b, c) {
+    const line = 'crowd: ' + (a + b + c) + ' (' + a + ' skinned / ' +
+                 b + ' instanced / ' + c + ' cards)';
+    console.log('[sv] ' + line);
+    this.summary = line;
+    const el = document.getElementById('crowdState');
+    if (el) { el.textContent = (a + b + c) + ' — ' + a + 'sk/' + b + 'in/' + c + 'bb'; }
+  },
+
+  clear: function () {
+    const self = this;
+    this.skinned.forEach(function (s) {
+      s.mixer.stopAllAction();
+      self.root.remove(s.mesh);
+      s.mesh.geometry.dispose();
+      s.mesh.material.dispose();
+    });
+    this.skinned = [];
+
+    [this.solid, this.cards].forEach(function (group) {
+      if (!group) { return; }
+      group.forEach(function (m) {
+        self.root.remove(m);
+        m.geometry.dispose();
+        m.material.dispose();
+      });
+    });
+    this.solid = null;
+    this.cards = null;
+    this.cardData = null;
+  },
+
+  tick: function (t, dt) {
+    const d = Math.min(dt || 16, 50) / 1000;
+
+    /* Tier A: every mixer advanced individually. This is the cost that does
+       not scale, and the whole reason the other two tiers exist. */
+    for (let i = 0; i < this.skinned.length; i++) {
+      this.skinned[i].mixer.update(d);
+    }
+
+    /* Tier C: the audience all face the stage anyway, so the cards only need
+       re-aiming when the speaker moves off-axis — 5Hz is plenty, and it keeps
+       a 250-instance rewrite off the critical path. */
+    if (this.cards && t > this.nextFace) {
+      this.nextFace = t + 200;
+      const cam = this.el.sceneEl.camera;
+      if (cam) {
+        const p = new THREE.Vector3();
+        cam.getWorldPosition(p);
+        const dummy = new THREE.Object3D();
+        const cards = this.cards;
+        for (let i = 0; i < this.cardData.length; i++) {
+          const c = this.cardData[i];
+          dummy.position.set(c.x, c.y + SEAT_TOP, c.z);
+          dummy.rotation.set(0, Math.atan2(p.x - c.x, p.z - c.z), 0);
+          dummy.scale.set(1, c.h, 1);
+          dummy.updateMatrix();
+          cards[0].setMatrixAt(i, dummy.matrix);
+          cards[1].setMatrixAt(i, dummy.matrix);
+        }
+        cards[0].instanceMatrix.needsUpdate = true;
+        cards[1].instanceMatrix.needsUpdate = true;
+      }
+    }
   }
 });
 
@@ -1309,6 +1856,14 @@ AFRAME.registerComponent('sv-snapturn', {
       };
       if (handR) { handR.addEventListener('abuttondown', toggleLights); }
       if (handL) { handL.addEventListener('xbuttondown', toggleLights); }
+
+      /* B / Y steps the audience up the ladder. This is both the difficulty
+         dial and the stress ramp — walk it up while watching the frame
+         counter and the number where it breaks is the answer to open
+         question 1 of the brief. */
+      const stepCrowd = function () { window.svStepCrowd(); };
+      if (handR) { handR.addEventListener('bbuttondown', stepCrowd); }
+      if (handL) { handL.addEventListener('ybuttondown', stepCrowd); }
     };
 
     if (this.el.sceneEl.hasLoaded) { bind(); }
@@ -1408,11 +1963,22 @@ AFRAME.registerComponent('sv-snapturn', {
     const l = scene.components['sv-lighting'];
     if (l) { l.toggle(); }
   });
+  /* Step the audience up the ladder, wrapping back to empty at the top.
+     Exposed on window so the controller binding can reach it too. */
+  window.svStepCrowd = function () {
+    const c = scene.components['sv-crowd'];
+    if (!c) { return; }
+    const next = (c.data.preset + 1) % CROWD_PRESETS.length;
+    scene.setAttribute('sv-crowd', 'preset', next);
+  };
+  document.getElementById('btnCrowd').addEventListener('click', window.svStepCrowd);
+
   window.addEventListener('keydown', function (e) {
     if (e.code === 'KeyL') {
       const l = scene.components['sv-lighting'];
       if (l) { l.toggle(); }
     }
+    if (e.code === 'KeyC') { window.svStepCrowd(); }
   });
 
   scene.addEventListener('loaded', function () {

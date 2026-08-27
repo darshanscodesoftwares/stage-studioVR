@@ -325,8 +325,47 @@ here too.
 
 ## Open questions — decide these before building
 
-1. **What is the maximum audience size we will support, and at what fidelity?**
-   Everything else depends on this answer. Prototype the crowd first, empty.
+1. ~~**What is the maximum audience size we will support, and at what
+   fidelity?**~~ **ANSWERED — a full house, at full fidelity.**
+
+   Measured with `sv-crowd`, a lab that builds real `THREE.SkinnedMesh`
+   figures with real skeletons, real `AnimationMixer`s and phase-offset idle
+   clips, generated procedurally so the question could be settled **without
+   downloading or licensing a single model**. A skinned figure costs the GPU
+   the same whether it is shaped like a person or a blob.
+
+   Cost of a **286-seat full house**, seen from the lectern:
+
+   | Front-row figure | Total triangles | Draw calls |
+   | --- | --- | --- |
+   | 1,800 tris | 29,834 | 56 |
+   | 5,000 tris | 55,490 | 59 |
+   | **10,000 tris** | **95,692** | **59** |
+
+   And the cost of the crowd alone, at 1,800 tris per skinned figure:
+
+   | People | Draw calls | Triangles |
+   | --- | --- | --- |
+   | 0 | 39 | 8,074 |
+   | 5 | 49 | 18,124 |
+   | 20 | 57 | 25,578 |
+   | 286 | 59 | 29,890 |
+
+   **The first 8 people cost more than the next 278 combined.** Going from
+   5 to 286 costs ten draw calls. This is the tiering working exactly as the
+   brief hoped: 8 skinned + 40 instanced + 238 billboards, where each of the
+   last two tiers is a single draw call no matter how many people are in it.
+
+   The practical consequence is that **the crowd was never the constraint
+   the brief feared.** Budget for 8 genuinely good rigged figures in the
+   front rows and stop worrying about the rest — the back of the room is
+   free. Spend the effort on their *behaviour* instead, which is what the
+   anxiety actually comes from.
+
+   Caveat: these are draw-call and triangle counts, which are properties of
+   the scene and therefore transfer to any device. Whether a Quest sustains
+   72fps while pushing them is a separate question and still needs the
+   on-device reading.
 2. Where do the audience models come from? Mixamo is the obvious source for
    rigged, animated humans, but check its terms for this use. CC0 alternatives
    are scarcer and worse. **Settle the licence before converting.**

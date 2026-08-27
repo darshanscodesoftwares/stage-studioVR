@@ -143,17 +143,52 @@ The house-lights switch exploits this. Stage lights in your eyes is **easy
 mode** — you cannot see any faces. House lights up is **hard mode**. The brief
 suspects that one switch may be the most useful setting in the whole app.
 
+## The crowd lab
+
+`sv-crowd` exists to answer the brief's central question — *how many people,
+at what fidelity* — and it answers it **without downloading or licensing a
+single model**. The figures are generated procedurally: a real
+`THREE.SkinnedMesh` with a real 4-bone skeleton, a real `AnimationMixer` and a
+phase-offset idle clip. A skinned figure costs the GPU the same whether it is
+shaped like a person or a blob, so the measurement transfers even though the
+silhouette does not.
+
+Three tiers, filling seats front to back so the expensive figures always land
+where eye contact happens:
+
+| Tier | What | Cost |
+| --- | --- | --- |
+| A — front rows | real skinned meshes | 1 draw call **each**, + 1 mixer each |
+| B — middle | one `InstancedMesh` | 1 draw call **total** |
+| C — back rows | instanced billboards | 1 draw call **total** |
+
+Press **C** on the desktop, or **B**/**Y** on a controller, to walk up the
+difficulty ladder: 0 → 5 → 20 → 60 → 150 → 286 → back to empty.
+
+**The result:** a 286-seat full house costs **59 draw calls and 96k triangles**
+even with 10,000-triangle figures in the front row. Going from 5 people to 286
+costs ten draw calls — the first eight people cost more than the next 278
+combined. Full numbers are in [PROJECT.md](PROJECT.md).
+
+So budget for eight genuinely good rigged figures at the front and stop
+worrying about the rest. The effort belongs in their *behaviour*, not their
+count.
+
 ## Next
 
-M1, in the order the brief argues for:
-
-1. Prototype the crowd **empty** — instanced billboards first, then measure,
-   then decide the maximum audience size. Everything else depends on that number.
-2. Seating geometry, generated parametrically, carving the walkable regions.
-3. Room tone and murmur, and a `ConvolverNode` reverb from a runtime-generated
+1. **Read the frame counter on the headset.** Still the one number this
+   machine cannot produce, and now it matters twice over — for the empty hall
+   and for a full house.
+2. Punch the seat rows out of the walkable regions. Right now you can walk
+   through the chairs, because `REGIONS` predates `SEATING`.
+3. Attention states and eye contact — per-person engaged / neutral /
+   distracted, and heads that turn toward the speaker. The brief calls eye
+   contact the single most anxiety-producing behaviour available, and nearly
+   free.
+4. Room tone and murmur, and a `ConvolverNode` reverb from a runtime-generated
    impulse response.
-4. The tabbed panel on the left controller, carried over from room-studioVR.
+5. The tabbed panel on the left controller, carried over from room-studioVR.
 
-Open questions are listed at the end of [PROJECT.md](PROJECT.md). The one that
-needs answering before any modelling starts is where the audience figures come
-from and under what licence.
+Open questions are at the end of [PROJECT.md](PROJECT.md). Question 1 is now
+answered; the licence question is much less urgent than it was, because the
+crowd needs only eight real figures rather than three hundred.
