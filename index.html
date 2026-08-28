@@ -212,7 +212,11 @@ const HALL = {
    drift apart.
    ====================================================================== */
 const SEATING = {
-  rowZ0: 0.9, rowGap: 1.00, rows: 13,
+  /* rowZ0 was 0.9, which left 4.7m of bare apron and put the front row 8.5m
+     from the lectern. Eye contact is the product and distance is the one
+     thing that kills it, so the house comes forward: from the stage edge the
+     front row is now ~3.4m away, close enough to see someone check a phone. */
+  rowZ0: -1.8, rowGap: 1.00, rows: 13,
   colX0: -7.6, colGap: 0.66, cols: 24,
   aisles: [7, 16],          // two gangways
   rise: 0.15,               // per row, after the first two
@@ -271,7 +275,8 @@ const REGIONS = (function () {
     { id: 'stage',  x0: -8.6, x1: 8.6, z0: -11.600, z1: -5.000, y: 0.9 },
     { id: 'treadA', x0: -8.6, x1: 8.6, z0:  -5.000, z1: -4.667, y: 0.6 },
     { id: 'treadB', x0: -8.6, x1: 8.6, z0:  -4.667, z1: -4.333, y: 0.3 },
-    { id: 'apron',  x0: -8.6, x1: 8.6, z0:  -4.333, z1:  0.400, y: 0.0 }
+    { id: 'apron',  x0: -8.6, x1: 8.6, z0:  -4.333,
+      z1: rowZ(0) - SEATING.rowGap / 2, y: 0.0 }
   ];
   const half = SEATING.rowGap / 2;
   const spans = aisleSpans();
@@ -951,9 +956,14 @@ AFRAME.registerComponent('sv-lighting', {
   setHouse: function (on) {
     this.housOn = on;
     this.house.forEach(function (e) {
-      e.setAttribute('light', 'intensity', on ? 96 : 0);
+      e.setAttribute('light', 'intensity', on ? 96 : 7);   // 7 = a low check, not off
     });
-    this.amb.setAttribute('light', 'intensity', on ? 0.55 : 0.08);
+    /* House down is not blackout. A real auditorium with the house at a
+       low check still gives you the MASS of the audience — shapes, the
+       glint of faces, movement — without letting you read any of them.
+       That is more unsettling than an empty void, not less, and it keeps
+       the eye-contact work visible instead of throwing it away. */
+    this.amb.setAttribute('light', 'intensity', on ? 0.55 : 0.17);
     /* With the house down the stage wash carries the whole room, so it goes
        up, not down — that is the point of the easy mode: lit speaker, dark
        auditorium, no faces to see. */
