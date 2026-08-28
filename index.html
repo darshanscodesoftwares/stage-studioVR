@@ -1246,6 +1246,13 @@ const PEOPLE = [
 ];
 const CHAIR_PAN_Y = 0.44;              // chair.glb pan height
 
+/* Slide the figure back onto the seat. Its origin sits near the knees, not
+   under the bum, so placing the origin at the seat point left every person
+   perched on the front lip with 25cm of empty chair visible behind them —
+   measured, chair back edge -1.454 against a figure back edge of -1.702.
+   The chair faces -z, so "back" is +z in the seat's own frame. */
+const SEAT_BACK_OFFSET = 0.17;
+
 /* The neck chain the attention code turns. Spreading the rotation across
    four joints is what makes a head turn read as a neck rather than a hinge
    — and because these are real bones in a skinned mesh, the geometry
@@ -1660,7 +1667,10 @@ AFRAME.registerComponent('sv-crowd', {
        figures face +z where the scene's convention is -z. */
     const bySeat = s.y + CHAIR_PAN_Y - p.seatY;   // bum exact, feet may float
     const byFeet = s.y - p.soleY;                 // feet exact, bum may sink
-    p.root.position.set(s.x, (bySeat + byFeet) / 2, s.z);
+    const back = SEAT_BACK_OFFSET;
+    p.root.position.set(s.x + Math.sin(s.yaw) * back,
+                        (bySeat + byFeet) / 2,
+                        s.z + Math.cos(s.yaw) * back);
     p.root.rotation.y = s.yaw + Math.PI;
     return { mesh: p.root, bones: p.bones, baseYaw: s.yaw,
              isGlb: true, pooled: true };
