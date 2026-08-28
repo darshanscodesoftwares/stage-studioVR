@@ -223,11 +223,48 @@ const SEATING = {
 function rowY (r) { return r <= 1 ? 0 : (r - 1) * SEATING.rise; }
 function rowZ (r) { return SEATING.rowZ0 + r * SEATING.rowGap; }
 
+/* Height of the rake platform at a given depth, independent of whether you
+   are allowed to STAND there. Seats must use this rather than floorAt:
+   floorAt deliberately reports no floor where a chair is, so asking it for
+   a chair's height is circular and disqualifies every seat in the house. */
+function rakeYAt (z) {
+  const half = SEATING.rowGap / 2;
+  for (let r = 0; r < SEATING.rows; r++) {
+    const z1 = (r === SEATING.rows - 1) ? 13.6 : rowZ(r) + half;
+    if (z >= rowZ(r) - half && z <= z1) { return rowY(r); }
+  }
+  return 0;                                    // apron, or past the back wall
+}
+
 /* Walkable regions, built from the seating so the rake is walkable and the
    floor height a step lands on is always the one the chairs are standing on.
    A position is legal if it falls inside at least one region; its floor
    height is the tallest region containing it. Union-of-rectangles, the same
    approach that worked in room-studioVR. */
+/* Where you can actually put your feet within a seated row: the two
+   gangways, and the margin between the outermost seat and each side wall.
+   Derived from the seat grid rather than hard-coded, so moving an aisle
+   moves the walkable strip with it. Chairs are 0.5m wide, hence the 0.25
+   half-width clearance either side. */
+function aisleSpans () {
+  const half = 0.25;
+  const colX = function (c) { return SEATING.colX0 + c * SEATING.colGap; };
+  const spans = [];
+
+  spans.push({ x0: -8.6, x1: colX(0) - half });                     // left margin
+  SEATING.aisles.forEach(function (c) {
+    spans.push({ x0: colX(c - 1) + half, x1: colX(c + 1) - half }); // gangway
+  });
+  spans.push({ x0: colX(SEATING.cols - 1) + half, x1: 8.6 });       // right margin
+
+  return spans.filter(function (s) { return s.x1 - s.x0 > 0.5; });  // too narrow to use
+}
+
+/* Walkable regions, built from the seating so the rake is walkable, the
+   floor a step lands on is the one the chairs stand on, and the seats
+   themselves are solid. A position is legal if it falls inside at least one
+   region; its floor height is the tallest region containing it.
+   Union-of-rectangles, the same approach that worked in room-studioVR. */
 const REGIONS = (function () {
   const R = [
     { id: 'stage',  x0: -8.6, x1: 8.6, z0: -11.600, z1: -5.000, y: 0.9 },
@@ -236,14 +273,17 @@ const REGIONS = (function () {
     { id: 'apron',  x0: -8.6, x1: 8.6, z0:  -4.333, z1:  0.400, y: 0.0 }
   ];
   const half = SEATING.rowGap / 2;
+  const spans = aisleSpans();
+
   for (let r = 0; r < SEATING.rows; r++) {
     const z = rowZ(r);
-    R.push({
-      id: 'row' + r,
-      x0: -8.6, x1: 8.6,
-      z0: z - half,
-      z1: (r === SEATING.rows - 1) ? 13.6 : z + half,
-      y: rowY(r)
+    const z0 = z - half;
+    const z1 = (r === SEATING.rows - 1) ? 13.6 : z + half;
+    /* One region per gangway per row rather than one across the whole row:
+       the seats in between are now solid, so you walk up an aisle like a
+       person instead of straight through the audience. */
+    spans.forEach(function (s, i) {
+      R.push({ id: 'row' + r + '.' + i, x0: s.x0, x1: s.x1, z0: z0, z1: z1, y: rowY(r) });
     });
   }
   return R;
@@ -272,8 +312,7 @@ function seatList () {
       if (SEATING.aisles.indexOf(c) !== -1) { continue; }
       const x = SEATING.colX0 + c * SEATING.colGap;
       const z = base - (x * x) / (2 * SEATING.curveR);   // outer seats swing forward
-      const y = floorAt(x, z);
-      if (y === null) { continue; }
+      const y = rakeYAt(z);
       /* Local -z is the chair's front, so yaw 0 already faces the stage.
          Damped, because a real auditorium angles seats less than the pure
          look-at angle would. */
@@ -643,9 +682,20 @@ AFRAME.registerComponent('sv-hall', {
        row in front. Built from the same REGIONS the walking code uses, as
        one InstancedMesh of scaled boxes, so it is a single draw call and it
        physically cannot disagree with where your feet think the floor is. */
-    const steps = REGIONS.filter(function (r) {
-      return r.id.indexOf('row') === 0 && r.y > 0.001;
-    });
+    /* Built from the row data, not from REGIONS: REGIONS now holds several
+       narrow walkable strips per row (the gangways and the wall margins),
+       whereas the platform underneath them is one full-width tier. */
+    const steps = [];
+    const halfRow = SEATING.rowGap / 2;
+    for (let r = 0; r < SEATING.rows; r++) {
+      const y = rowY(r);
+      if (y <= 0.001) { continue; }
+      steps.push({
+        y: y,
+        z0: rowZ(r) - halfRow,
+        z1: (r === SEATING.rows - 1) ? 13.6 : rowZ(r) + halfRow
+      });
+    }
     if (steps.length) {
       const stepGeo = new THREE.BoxGeometry(1, 1, 1);
       const stepTex = ProcTex.get('carpet', 6, 1);
