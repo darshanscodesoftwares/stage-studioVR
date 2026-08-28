@@ -255,10 +255,10 @@ per model.
 
 | Tool | Why |
 | --- | --- |
-| **Blender** | `blender --background --python script.py`, or `pip install bpy`. Modelling, rigging, animation, UV, decimation, glTF export — all scriptable. The one tool that covers the span. |
-| **trimesh** | `pip install trimesh`. Load anything, measure it, convert it. The tool for *measure, don't guess*. |
-| **gltf-transform** | `npm i -g @gltf-transform/cli`. Inspect, weld, dedupe, simplify, resize textures, meshopt/Draco/KTX2. |
-| **gltfpack** | The blunt version of the same. `-mi` gives mesh instancing, which is directly the crowd problem. |
+| **Blender** | **Installed: 4.5.13 LTS, as a no-root tarball at `~/tools/blender/`**, with the **MPFB 2.0.17** extension installed and working headless. `blender --background --python script.py`. Modelling, rigging, animation, UV, decimation, glTF export — all scriptable. |
+| **trimesh** | **Installed: 5.0.0**, in a venv at `~/tools/py/` (Ubuntu's PEP 668 lock means no system pip; the venv bootstraps its own). Load anything, measure it, convert it. The tool for *measure, don't guess*. |
+| **gltf-transform** | **Installed: 4.4.2** (npm global, no sudo — the prefix is nvm's). Inspect, weld, dedupe, simplify, resize textures, meshopt/Draco/KTX2. Proved on the chair: 5,072 → 354 tris, with the decimation floor found by rendering. |
+| **gltfpack** | **Installed: 1.2.** The blunt version of the same. `-mi` gives mesh instancing, which is directly the crowd problem. |
 | **PyMeshLab** | When downloaded models arrive too heavy and need real decimation. |
 
 **Assets can be fetched programmatically.** Poly Haven has a public API and it
@@ -374,9 +374,22 @@ here too.
    the scene and therefore transfer to any device. Whether a Quest sustains
    72fps while pushing them is a separate question and still needs the
    on-device reading.
-2. Where do the audience models come from? Mixamo is the obvious source for
-   rigged, animated humans, but check its terms for this use. CC0 alternatives
-   are scarcer and worse. **Settle the licence before converting.**
+2. ~~Where do the audience models come from?~~ **ANSWERED — generated, by
+   MPFB2 in Blender, both now installed and proven headless on this machine.**
+   `tools/generate_humans.py` produces varied rigged humans (163 bones,
+   ~0.9 MB each) from a macro dict — gender, age, muscle, weight, height,
+   ethnicity as 0..1 floats — which is the "forty different audience members"
+   plan made real. Licence settled at the source: the MakeHuman base mesh
+   every figure derives from was **explicitly released as CC0 in September
+   2020** — the statement, with named copyright holders, is in the header of
+   MPFB's own `data/3dobjs/base.obj`. MPFB itself is GPL, which covers the
+   tool, not its output. Mixamo remains relevant only as a possible source of
+   animation clips, and its terms still need reading before any clip ships.
+   Still open on this path: clothes (the CC0 "MakeHuman system assets" pack
+   has them; `HumanService.add_mhclo_asset` loads them), a seated pose, and
+   decimation — the raw figure is ~18k polys and the front row budget from
+   the crowd measurement is comfortable with that, but the export pipeline
+   should still crush it.
 3. Real speech recognition for filler words ("um", "like") would be the
    strongest feature in the app. The Web Speech API works in desktop Chrome;
    whether it works in the Quest browser is unknown and needs testing early —
