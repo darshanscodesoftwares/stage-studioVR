@@ -73,6 +73,35 @@ POSE = {
 # A resting hand curls. Applied to every finger joint on both hands.
 FINGER_CURL = {"1": 10, "2": 30, "3": 32, "4": 30, "5": 26}
 
+# One shin angle for everybody, and the residual is handled in the scene.
+#
+# A seated body has two ground truths - bum on the chair pan, soles on the
+# floor - and the distance between them is a property of the BODY: across
+# six generated people it runs 0.35m to 0.54m against a 0.44m chair. No
+# single pose satisfies both for every figure.
+#
+# Solving per-figure was attempted four ways and abandoned, which is worth
+# recording so nobody repeats it:
+#   - a vertex window for the buttock misread the seat by 20cm on half the
+#     bodies (the box that finds the buttock on one pelvis finds the crotch
+#     on another);
+#   - "hip bone minus a constant" was self-consistent, so it reported
+#     converging to 2cm while disagreeing with the scene's own measurement
+#     by 10cm;
+#   - measuring the real mesh per candidate cost six minutes a figure;
+#   - stepping the angle from measured error oscillated, because at the
+#     extreme angles it demanded (127 degrees of knee) the tucked shin
+#     enters the buttock measurement window and corrupts the very number
+#     driving the loop.
+#
+# The residual is at most ~5cm and index.html splits it between seat and
+# feet, so each is out by ~2.5cm - well below what reads at conversational
+# distance in a dim hall, and far below the 10cm that was actually visible.
+# 86 degrees is a natural seated knee and keeps every figure out of the
+# extreme poses that broke the measurement.
+SHIN_NOMINAL = 86
+SHIN = {}
+
 MALE_SUITS = ["male_casualsuit01", "male_casualsuit02", "male_casualsuit03",
               "male_casualsuit04", "male_casualsuit05", "male_casualsuit06"]
 FEMALE_SUITS = ["female_casualsuit01", "female_casualsuit02",
@@ -229,7 +258,7 @@ def fit_feet_to_floor(arm, body, others):
     return best[1]
 
 
-def bake_pose(arm):
+def bake_pose(arm, shin=None):
     """Make the seated pose the REST pose, keeping the armature live.
 
     The figure ships as a skinned mesh with its skeleton intact, so the
@@ -247,6 +276,17 @@ def bake_pose(arm):
         if pb:
             pb.rotation_mode = "XYZ"
             pb.rotation_euler = (rad(x), rad(y), rad(z))
+
+    # AFTER the POSE dict, never before: POSE carries a lowerleg01 entry of
+    # its own, so setting the per-figure shin first just gets overwritten -
+    # which is exactly what happened, silently, and produced two identical
+    # generation passes.
+    if shin is not None:
+        for side in ("L", "R"):
+            pb = arm.pose.bones.get("lowerleg01.%s" % side)
+            if pb:
+                pb.rotation_mode = "XYZ"
+                pb.rotation_euler = (rad(shin), 0, 0)
 
     for side in ("L", "R"):
         for digit, deg in FINGER_CURL.items():
@@ -314,34 +354,9 @@ def generate(out_dir, count):
 
         clothe(HumanService, mesh, i, macros["gender"] > 0.5)
 
-        # set the pose, fit the feet to the floor, THEN bake
-        bpy.ops.object.select_all(action="DESELECT")
-        arm.select_set(True)
-        bpy.context.view_layer.objects.active = arm
-        bpy.ops.object.mode_set(mode="POSE")
-        for name, (x, y, z) in POSE.items():
-            pb = arm.pose.bones.get(name)
-            if pb:
-                pb.rotation_mode = "XYZ"
-                pb.rotation_euler = (rad(x), rad(y), rad(z))
-        for side in ("L", "R"):
-            for digit, deg in FINGER_CURL.items():
-                for joint in ("1", "2", "3"):
-                    pb = arm.pose.bones.get("finger%s-%s.%s" % (digit, joint, side))
-                    if pb:
-                        pb.rotation_mode = "XYZ"
-                        pb.rotation_euler = (rad(deg), 0, 0)
-        bpy.ops.object.mode_set(mode="OBJECT")
-
-        # Measure the SOLE from the shoes alone. Scanning every mesh made the
-        # lowest vertex a hair tip for the long-haired figures - hair hangs
-        # below the seat when seated - and the solver then chased a target
-        # the shins could not move, pinning itself at the search limits.
-        soles = [o for o in bpy.data.objects
-                 if o.type == "MESH" and any(s in o.name for s in SHOES)]
-        fit_feet_to_floor(arm, mesh, soles)
-
-        bake_pose(arm)
+        shin = SHIN.get(i, SHIN_NOMINAL)
+        print("GEN   person_%02d shin %d deg" % (i, shin))
+        bake_pose(arm, shin)
 
         # skin material for the body mesh (clothes keep their own)
         tone = 0.3 + hash01(i, 11) * 0.5
@@ -354,28 +369,13 @@ def generate(out_dir, count):
         mesh.data.materials.clear()
         mesh.data.materials.append(mat)
 
-        # Decimation now also has to preserve skin weights, which the
-        # collapse modifier interpolates - another reason to stay gentle.
-        # Decimation has to stay gentle, and the reason is fit, not looks.
-        # The body and its clothes are separate meshes fitted to each other
-        # vertex by vertex; decimating them independently moves their
-        # surfaces apart and the body erupts through the shirt. Hair is
-        # worse - below about 0.5 it stops being strands and becomes white
-        # shrapnel round the neck. Both found by rendering. The budget is
-        # not the constraint: eight figures at 5k tris is nothing against
-        # the measured headroom.
-        # Only the BODY is decimated. Clothes and hair are fitted meshes -
-        # every vertex of a garment is tied to the body surface beneath it,
-        # so collapsing its edges tears the fit open: jeans shear into
-        # shards and forearms punch through the trouser leg. Verified by
-        # rendering one figure large. They are cheap anyway; the body is
-        # the part with the polygons.
-        for o in [o for o in bpy.data.objects if o.type == "MESH"]:
-            fitted = any(h in o.name for h in HAIR) or \
-                any(c in o.name for c in MALE_SUITS + FEMALE_SUITS + SHOES)
-            if fitted:
-                continue
-            decimate(o, 0.45)
+        # NOTHING is decimated any more. The body used to be collapsed to
+        # 0.45 while the fitted garments were left alone, which pulled the
+        # two surfaces apart: they are built vertex-against-vertex, so the
+        # body erupted through the shirt as white shards across every chest
+        # and shoulder. Every pose fix layered on top of that was cosmetic.
+        # Triangles were never the constraint - eight figures at ~20k is
+        # nothing against the measured headroom.
 
         # the armature ships too: the scene turns neck bones
         bpy.ops.object.select_all(action="SELECT")
