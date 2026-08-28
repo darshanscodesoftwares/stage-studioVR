@@ -1217,7 +1217,12 @@ AFRAME.registerComponent('sv-truss', {
 /* Difficulty ladder from the brief, doubling as the stress ramp. */
 const CROWD_PRESETS = [0, 5, 20, 60, 150, 299];
 const MAX_SKINNED = 8;                 // tier A cap — the eye-contact rows
-const MAX_SOLID   = 40;                // tier B cap
+/* Tier B was capped at 40 when the cards were assumed necessary. The crowd
+   measurement said otherwise — an instanced body is one draw call at ANY
+   count — and from inside the house the cards betray themselves edge-on as
+   paper slivers. 132 pushes the first card back to ~row 8, which is far
+   enough that nobody meets one at conversational range. */
+const MAX_SOLID   = 132;               // tier B cap
 const SEAT_TOP    = 0.50;              // seat pan height — where a seated body starts
 
 /* =========================================================================
@@ -1303,32 +1308,64 @@ function mergeGeoms (list) {
   return out;
 }
 
-/* A seated torso with shoulders, plus arms resting forward on the lap. */
+/* A seated figure: torso with shoulders, arms, and legs. The first version
+   stopped at the hips, which left busts perched on the chairs — from behind
+   or the side a person with no thighs and no shins does not read as sitting,
+   it reads as an ornament. Everything merges into one geometry, so a figure
+   is still a single draw call. */
 function seatedBody (radial) {
   const profile = [
     [0.208, 0.000],   // hips, spread by the seat
     [0.201, 0.105],
-    [0.170, 0.290],   // waist
-    [0.188, 0.455],
-    [0.214, 0.615],   // shoulders — the widest point, which the cone lacked
-    [0.196, 0.706],
-    [0.104, 0.762],   // neck
-    [0.060, 0.800]
+    [0.172, 0.290],   // waist
+    [0.192, 0.470],
+    [0.220, 0.585],   // shoulders — wider and squarer than the first pass,
+    [0.218, 0.655],   // which sloped off like a chess pawn
+    [0.150, 0.718],
+    [0.096, 0.756],   // neck
+    [0.058, 0.800]
   ].map(function (p) { return new THREE.Vector2(p[0], p[1]); });
 
   const torso = new THREE.LatheGeometry(profile, radial);
   torso.scale(1, 1, 0.66);            // people are wider than they are deep
 
+  const armR = Math.max(6, radial >> 1);
   const arm = function (side) {
-    const a = new THREE.CapsuleGeometry(0.050, 0.30, 2, Math.max(6, radial >> 1));
+    const a = new THREE.CapsuleGeometry(0.048, 0.30, 2, armR);
     const m = new THREE.Matrix4();
-    m.makeRotationFromEuler(new THREE.Euler(0.42, 0, side * 0.13));
-    m.setPosition(side * 0.198, 0.415, 0.055);
+    m.makeRotationFromEuler(new THREE.Euler(0.42, 0, side * 0.22));
+    /* Pushed to 0.215 out from 0.198: tucked against the torso they merged
+       into the silhouette and vanished from behind. */
+    m.setPosition(side * 0.215, 0.415, 0.055);
     a.applyMatrix4(m);
     return a;
   };
 
-  return mergeGeoms([torso, arm(-1), arm(1)]);
+  /* Legs. Thighs run forward off the seat, shins drop to the floor. The
+     figure's origin is the seat pan, SEAT_TOP above the floor, so shins
+     reach -0.58 — a little PAST the floor, on purpose: bodies get scaled
+     0.9–1.15 for height variety, and overshooting keeps the shortest
+     figure's feet from hovering. The carpet is opaque; buried feet are
+     invisible, floating ones are not. */
+  const thigh = function (side) {
+    const t = new THREE.CapsuleGeometry(0.072, 0.24, 2, armR);
+    const m = new THREE.Matrix4();
+    m.makeRotationFromEuler(new THREE.Euler(Math.PI / 2 - 0.10, 0, 0));
+    m.setPosition(side * 0.095, 0.075, 0.20);
+    t.applyMatrix4(m);
+    return t;
+  };
+  const shin = function (side) {
+    const s = new THREE.CapsuleGeometry(0.052, 0.42, 2, armR);
+    const m = new THREE.Matrix4();
+    m.makeRotationFromEuler(new THREE.Euler(0.12, 0, 0));
+    m.setPosition(side * 0.100, -0.315, 0.345);
+    s.applyMatrix4(m);
+    return s;
+  };
+
+  return mergeGeoms([torso, arm(-1), arm(1),
+                     thigh(-1), thigh(1), shin(-1), shin(1)]);
 }
 
 function clamp (v, lo, hi) { return v < lo ? lo : (v > hi ? hi : v); }
