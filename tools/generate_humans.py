@@ -100,6 +100,14 @@ def clothe(HumanService, mesh, i, male):
 
 
 def bake_pose(arm):
+    """Make the seated pose the REST pose, keeping the armature live.
+
+    The figure ships as a skinned mesh with its skeleton intact, so the
+    scene can rotate neck bones and the mesh deforms continuously. The
+    earlier approach - bake the pose flat, then cut the head off as a
+    separate object - left an open hole at the neck that showed as white
+    shrapnel, and swung a rigid head off the shoulders when it turned.
+    """
     bpy.ops.object.select_all(action="DESELECT")
     arm.select_set(True)
     bpy.context.view_layer.objects.active = arm
@@ -118,45 +126,32 @@ def bake_pose(arm):
         if o.data.shape_keys:
             bpy.ops.object.shape_key_remove(all=True, apply_mix=True)
         for m in list(o.modifiers):
-            if m.type in ("ARMATURE", "MASK"):
+            if m.type == "SUBSURF":
+                o.modifiers.remove(m)              # never ship subdivision
+            elif m.type == "MASK":
                 try:
                     bpy.ops.object.modifier_apply(modifier=m.name)
                 except Exception:
                     pass
-            elif m.type == "SUBSURF":
-                o.modifiers.remove(m)          # never ship subdivision
+        # Bake the pose into the vertices via a COPY of the armature
+        # modifier, so the original stays behind to keep driving the mesh
+        # once the pose becomes the rest pose.
+        arms = [m for m in o.modifiers if m.type == "ARMATURE"]
+        if arms:
+            bpy.ops.object.modifier_copy(modifier=arms[0].name)
+            dup = [m for m in o.modifiers if m.type == "ARMATURE"][-1]
+            try:
+                bpy.ops.object.modifier_apply(modifier=dup.name)
+            except Exception:
+                pass
 
-
-def split_head(arm, body):
-    """Separate everything above the neck into its own object, pivoted at
-    the neck joint, so the in-scene attention code can turn it."""
-    # Blender is Z-up: the vertical axis here is z, and the glTF exporter
-    # does the Y-up conversion on the way out. Cutting on y would separate
-    # the front of the body from the back.
-    neck = arm.data.bones.get("neck02") or arm.data.bones.get("neck01")
-    cut = (arm.matrix_world @ neck.head_local).z
-
+    # current pose becomes rest: every bone back to identity, mesh unchanged
     bpy.ops.object.select_all(action="DESELECT")
-    body.select_set(True)
-    bpy.context.view_layer.objects.active = body
-    bpy.ops.object.mode_set(mode="EDIT")
-    bpy.ops.mesh.select_all(action="DESELECT")
+    arm.select_set(True)
+    bpy.context.view_layer.objects.active = arm
+    bpy.ops.object.mode_set(mode="POSE")
+    bpy.ops.pose.armature_apply()
     bpy.ops.object.mode_set(mode="OBJECT")
-    for v in body.data.vertices:
-        v.select = v.co.z > cut
-    bpy.ops.object.mode_set(mode="EDIT")
-    bpy.ops.mesh.separate(type="SELECTED")
-    bpy.ops.object.mode_set(mode="OBJECT")
-
-    head = [o for o in bpy.context.selected_objects if o != body][-1]
-    head.name = "HeadPart"
-    # pivot at the neck: origin must sit on the cut plane, mid-skull
-    bpy.context.scene.cursor.location = (0, 0, cut)
-    bpy.ops.object.select_all(action="DESELECT")
-    head.select_set(True)
-    bpy.context.view_layer.objects.active = head
-    bpy.ops.object.origin_set(type="ORIGIN_CURSOR")
-    return head, cut
 
 
 def decimate(obj, ratio):
@@ -193,19 +188,8 @@ def generate(out_dir, count):
         mesh.data.materials.clear()
         mesh.data.materials.append(mat)
 
-        head, cut = split_head(arm, mesh)
-        print("GEN person_%02d neck at y=%.3f" % (i, cut))
-
-        # hair follows the head; give it the head's pivot too
-        for o in bpy.data.objects:
-            if o.type == "MESH" and any(h in o.name for h in HAIR):
-                bpy.context.scene.cursor.location = (0, 0, cut)
-                bpy.ops.object.select_all(action="DESELECT")
-                o.select_set(True)
-                bpy.context.view_layer.objects.active = o
-                bpy.ops.object.origin_set(type="ORIGIN_CURSOR")
-                o.name = "HeadPart_hair"
-
+        # Decimation now also has to preserve skin weights, which the
+        # collapse modifier interpolates - another reason to stay gentle.
         # Decimation has to stay gentle, and the reason is fit, not looks.
         # The body and its clothes are separate meshes fitted to each other
         # vertex by vertex; decimating them independently moves their
@@ -225,12 +209,10 @@ def generate(out_dir, count):
                 any(c in o.name for c in MALE_SUITS + FEMALE_SUITS + SHOES)
             if fitted:
                 continue
-            decimate(o, 0.6 if o.name.startswith("HeadPart") else 0.45)
+            decimate(o, 0.45)
 
+        # the armature ships too: the scene turns neck bones
         bpy.ops.object.select_all(action="SELECT")
-        for o in bpy.data.objects:
-            if o.type == "ARMATURE":
-                o.select_set(False)
         path = os.path.join(out_dir, "person_%02d.glb" % i)
         bpy.ops.export_scene.gltf(filepath=path, use_selection=True,
                                   export_apply=True, export_morph=False)

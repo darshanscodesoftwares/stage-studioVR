@@ -1245,6 +1245,14 @@ const PEOPLE = [
   { file: 'person_05', seatY: 0.898 }
 ];
 const CHAIR_PAN_Y = 0.44;              // chair.glb pan height
+
+/* The neck chain the attention code turns. Spreading the rotation across
+   four joints is what makes a head turn read as a neck rather than a hinge
+   — and because these are real bones in a skinned mesh, the geometry
+   deforms continuously. The previous approach cut the head off as a
+   separate object, which left an open hole at the neck (white shrapnel)
+   and swung a rigid skull off the shoulders. */
+const NECK_BONES = ['neck01', 'neck02', 'neck03', 'head'];
 const SEAT_TOP    = 0.50;              // seat pan height — where a seated body starts
 
 /* =========================================================================
@@ -1424,7 +1432,7 @@ AFRAME.registerComponent('sv-crowd', {
       .map(function (h) { return new THREE.Color(h); });
 
     this.buildChairs();
-    this.peopleTemplates = null;
+    this.peoplePool = null;
     this.loadPeople();
     this.apply(this.data.preset);
     console.log('[sv] crowd lab ready — ' + this.seats.length + ' seats');
@@ -1559,81 +1567,92 @@ AFRAME.registerComponent('sv-crowd', {
   },
 
   /* ----------------------------------------------- generated people
-     Load the six MPFB figures once and restructure each into a template:
-     body parts under the root, head parts (skull + hair, both pivoted at
-     the neck by the generator) under a HEAD GROUP the attention code can
-     rotate. The lathe figures stay as the fallback until these arrive —
-     nothing can fail to load. */
+     Eight figures are loaded as eight SEPARATE glTF instances rather than
+     cloned. A SkinnedMesh clone shares its skeleton with the original, so
+     every clone would turn its head in unison — and three's SkeletonUtils,
+     which exists to fix that, is not in A-Frame's bundle. Six files over
+     eight seats means two are fetched twice; the browser cache makes that
+     nearly free, and each parse gets its own skeleton.
+
+     They are pooled and hidden rather than created per apply(), because
+     re-parsing eight glTFs every time the preset changes would stall. */
   loadPeople: function () {
     const self = this;
     const loader = new THREE.GLTFLoader();
-    const templates = [];
-    let remaining = PEOPLE.length;
+    const pool = [];
+    let remaining = MAX_SKINNED;
 
-    PEOPLE.forEach(function (p, idx) {
-      loader.load('assets/people/' + p.file + '.glb', function (gltf) {
-        const root = new THREE.Group();
-        const headGroup = new THREE.Group();
-        /* The generated meshes face +z; the scene's convention is -z-front.
-           The flip container hides that from the aim code entirely. */
-        const flip = new THREE.Group();
-        flip.rotation.y = Math.PI;
-        headGroup.add(flip);
-        headGroup.rotation.order = 'YXZ';
+    for (let i = 0; i < MAX_SKINNED; i++) {
+      (function (idx) {
+        const p = PEOPLE[idx % PEOPLE.length];
+        loader.load('assets/people/' + p.file + '.glb', function (gltf) {
+          const root = gltf.scene;
+          root.visible = false;
 
-        let neckY = 0;
-        gltf.scene.updateMatrixWorld(true);
-        const meshes = [];
-        gltf.scene.traverse(function (n) { if (n.isMesh) { meshes.push(n); } });
-        meshes.forEach(function (n) {
-          const wp = new THREE.Vector3();
-          n.getWorldPosition(wp);
-          const m = n.clone();
-          m.position.set(0, 0, 0); m.rotation.set(0, 0, 0);
-          if (wp.y > 1.1) {              // neck-pivoted head part
-            neckY = wp.y;
-            flip.add(m);
-          } else {
-            m.position.copy(wp);
-            m.rotation.copy(n.rotation);
-            m.rotation.y += Math.PI;     // face the stage like the head does
-            m.position.z = -m.position.z;
-            root.add(m);
+          const bones = [];
+          root.traverse(function (n) {
+            if (n.isBone && NECK_BONES.indexOf(n.name) >= 0) {
+              bones.push(n);
+            }
+            /* A skinned mesh's bounding box is computed from the bind pose
+               and does not follow the bones, so frustum culling makes
+               figures vanish when they lean. */
+            if (n.isMesh) { n.frustumCulled = false; }
+          });
+
+          self.root.add(root);
+
+          /* Each neck bone rests at its own roll and pitch — the head bone
+             alone sits about 17 degrees back — so no fixed euler mapping
+             turns them all correctly. Measure every bone's own axes once,
+             at rest, and drive rotations about THOSE instead: `up` for yaw,
+             `right` for pitch. Exact regardless of how the bone is rolled. */
+          root.updateMatrixWorld(true);
+          const qw = new THREE.Quaternion();
+          const inv = new THREE.Quaternion();
+          bones.forEach(function (b) {
+            b.getWorldQuaternion(qw);
+            inv.copy(qw).invert();
+            b.svRest = b.quaternion.clone();
+            b.svUp = new THREE.Vector3(0, 1, 0).applyQuaternion(inv).normalize();
+            const face = new THREE.Vector3(0, 0, -1)
+              .applyAxisAngle(new THREE.Vector3(0, 1, 0), root.rotation.y)
+              .applyQuaternion(inv).normalize();
+            b.svRight = new THREE.Vector3().crossVectors(b.svUp, face).normalize();
+          });
+
+          pool[idx] = { root: root, bones: bones, seatY: p.seatY };
+
+          remaining--;
+          if (remaining === 0) {
+            self.peoplePool = pool;
+            console.log('[sv] ' + pool.length + ' generated people ready (' +
+                        (pool[0] ? pool[0].bones.length : 0) + ' neck bones each)');
+            self.apply(self.data.preset);
+          }
+        }, undefined, function (err) {
+          remaining--;
+          console.warn('[sv] ' + p.file + ' failed; lathe fallback stays', err);
+          if (remaining === 0 && pool.filter(Boolean).length) {
+            self.peoplePool = pool.filter(Boolean);
+            self.apply(self.data.preset);
           }
         });
-        headGroup.position.set(0, neckY, 0);
-        root.add(headGroup);
-
-        templates[idx] = { root: root, headGroup: headGroup, seatY: p.seatY };
-        remaining--;
-        if (remaining === 0) {
-          self.peopleTemplates = templates;
-          console.log('[sv] ' + templates.length + ' generated people ready');
-          self.apply(self.data.preset);   // upgrade the lathe figures in place
-        }
-      }, undefined, function (err) {
-        remaining--;
-        console.warn('[sv] ' + p.file + ' failed; lathe fallback stays', err);
-      });
-    });
+      })(i);
+    }
   },
 
-  spawnPerson: function (idx, s) {
-    const t = this.peopleTemplates[idx % this.peopleTemplates.length];
-    const root = t.root.clone(true);     // shares geometry and materials
-
-    let headGroup = null;
-    root.traverse(function (n) {
-      if (n.isGroup && Math.abs(n.position.y - t.headGroup.position.y) < 1e-4 &&
-          n !== root) { headGroup = headGroup || n; }
-    });
-
-    /* Place by measured seat contact, not by feet: the bake leaves hips at
-       standing height, so the bum, not the sole, is the datum. */
-    root.position.set(s.x, s.y + CHAIR_PAN_Y - t.seatY, s.z);
-    root.rotation.y = s.yaw;
-    this.root.add(root);
-    return { mesh: root, head: headGroup, baseYaw: s.yaw, isGlb: true };
+  spawnPerson: function (i, s) {
+    const p = this.peoplePool[i % this.peoplePool.length];
+    if (!p) { return null; }
+    p.root.visible = true;
+    /* Place by measured seat contact, not by feet: the pose bake leaves the
+       hips at standing height, so the bum is the datum. The +PI is because
+       the generated figures face +z where the scene's convention is -z. */
+    p.root.position.set(s.x, s.y + CHAIR_PAN_Y - p.seatY, s.z);
+    p.root.rotation.y = s.yaw + Math.PI;
+    return { mesh: p.root, bones: p.bones, baseYaw: s.yaw,
+             isGlb: true, pooled: true };
   },
 
   /* ------------------------------------------------------- head texture
@@ -1832,12 +1851,14 @@ AFRAME.registerComponent('sv-crowd', {
     for (let i = 0; i < nSkin; i++) {
       const s = seats[seatIdx++];
 
-      if (this.peopleTemplates) {
+      if (this.peoplePool) {
         const spawned = this.spawnPerson(i, s);
-        spawned.mixer = null;
-        spawned.person = personFor(seatIdx, this.data.mood);
-        this.skinned.push(spawned);
-        continue;
+        if (spawned) {
+          spawned.mixer = null;
+          spawned.person = personFor(seatIdx, this.data.mood);
+          this.skinned.push(spawned);
+          continue;
+        }
       }
 
       const fig = this.makeSkinned(
@@ -1980,13 +2001,13 @@ AFRAME.registerComponent('sv-crowd', {
     const self = this;
     this.skinned.forEach(function (s) {
       if (s.mixer) { s.mixer.stopAllAction(); }
-      self.root.remove(s.mesh);
-      /* Generated people are clones sharing geometry and materials with
-         their template — disposing would break every other clone. */
-      if (!s.isGlb) {
-        s.mesh.geometry.dispose();
-        s.mesh.material.dispose();
+      if (s.pooled) {
+        s.mesh.visible = false;        // pooled: hide, never dispose
+        return;
       }
+      self.root.remove(s.mesh);
+      s.mesh.geometry.dispose();
+      s.mesh.material.dispose();
     });
     this.skinned = [];
 
@@ -2061,6 +2082,33 @@ AFRAME.registerComponent('sv-crowd', {
     const k = 1 - Math.exp(-5.0 * d);
     for (let i = 0; i < this.skinned.length; i++) {
       const s = this.skinned[i];
+
+      /* glTF figures: turn the neck chain. Each joint takes an equal share,
+         which is what stops a 60-degree look reading as a snapped neck. */
+      if (s.bones && s.bones.length) {
+        this._hp.set(s.mesh.position.x, s.mesh.position.y + 1.25,
+                     s.mesh.position.z);
+        const a = this.aimFor(s.person, i, this._hp.x, this._hp.y, this._hp.z,
+                              s.baseYaw, sp, t);
+        const rel = clamp(wrapAngle(a.yaw - s.baseYaw),
+                          -HEAD_YAW_LIMIT, HEAD_YAW_LIMIT);
+        const share = 1 / s.bones.length;
+        if (!this._qa) {
+          this._qa = new THREE.Quaternion();
+          this._qb = new THREE.Quaternion();
+          this._qt = new THREE.Quaternion();
+        }
+        for (let b = 0; b < s.bones.length; b++) {
+          const bone = s.bones[b];
+          if (!bone.svUp) { continue; }
+          this._qa.setFromAxisAngle(bone.svUp, rel * share);
+          this._qb.setFromAxisAngle(bone.svRight, a.pitch * share);
+          this._qt.copy(bone.svRest).multiply(this._qa).multiply(this._qb);
+          bone.quaternion.slerp(this._qt, k);
+        }
+        continue;
+      }
+
       if (!s.head) { continue; }
       s.head.getWorldPosition(this._hp);
       const a = this.aimFor(s.person, i, this._hp.x, this._hp.y, this._hp.z,

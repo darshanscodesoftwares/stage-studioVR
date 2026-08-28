@@ -81,6 +81,11 @@ something that is true by construction.
   head object so the scene can turn it, decimation of the **body only**
   (0.45; head 0.6), textures to 256px, prune. 16.7k–23.3k triangles and
   675–883 KB per figure, 4.5 MB for the set of six.
+- **Why the skeleton ships:** an earlier version baked the pose flat and cut
+  the head off as a separate object so it could be rotated. That left an open
+  hole at the neck - visible as white shrapnel - and swung a rigid skull off
+  the shoulders whenever it turned. Keeping the armature lets the mesh deform
+  continuously instead.
 - **Why clothes are not decimated:** they are fitted meshes, tied vertex by
   vertex to the body beneath. Decimating them independently pulls the two
   surfaces apart — jeans shear into shards and forearms punch through the
