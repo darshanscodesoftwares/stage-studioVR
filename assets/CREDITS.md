@@ -81,12 +81,14 @@ something that is true by construction.
   head object so the scene can turn it, decimation of the **body only**
   (0.45; head 0.6), textures to 256px, prune. 16.7k–23.3k triangles and
   675–883 KB per figure, 4.5 MB for the set of six.
-- **The seated pose took four rendered attempts**, and the deciding term was
-  the arm ROLL. Swinging the upper arm down without rolling it leaves the
-  palms facing up with the fingers spread - a whole row appearing to
-  meditate. The y term on `upperarm01` turns the arm about its own length so
-  the palms come down against the thigh. Note also that INCREASING the elbow
-  angle RAISES the hand, which is the opposite of the intuition.
+- **The arm pose is solved, not guessed** - `tools/solve_arm_pose.py`. Six
+  hand-picked attempts all failed (palms up as if meditating, hands dangling
+  beside the seat, forearms held out like a steering wheel), because this
+  rig's axes do not match any intuition: increasing the ELBOW angle RAISES
+  the hand, and palm orientation is set by the UPPER ARM's roll, not the
+  wrist. The solver grid-searches the angles and scores each by how close the
+  wrist lands to a target measured on the figure's own thigh. Result: 2cm in
+  Blender, 4.9cm in the live scene.
 - **Why the skeleton ships:** an earlier version baked the pose flat and cut
   the head off as a separate object so it could be rotated. That left an open
   hole at the neck - visible as white shrapnel - and swung a rigid skull off
