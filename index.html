@@ -99,6 +99,29 @@
   #report .bar u { color: #98a2b8; text-decoration: none;
                    font-variant-numeric: tabular-nums; width: 42px; text-align: right; }
   #report .track { flex: 1; background: #171d29; border-radius: 5px; overflow: hidden; }
+
+  /* ---- Coach card: what rung you are on and what you are facing -------- */
+  #coach {
+    position: fixed; top: 14px; left: 50%; transform: translateX(-50%);
+    z-index: 600; width: min(430px, calc(100% - 28px));
+    background: rgba(12,16,24,.90); border: 1px solid #232c3d; border-radius: 12px;
+    padding: 13px 16px; color: #dfe5ef; backdrop-filter: blur(8px); display: none;
+  }
+  #coach.on { display: block; }
+  #coach .rung { font-size: 11px; letter-spacing: .10em; text-transform: uppercase;
+                 color: #6d7a92; margin-bottom: 5px; }
+  #coach h3 { margin: 0 0 6px; font-size: 17px; font-weight: 620; letter-spacing: -.01em; }
+  #coach p { margin: 0 0 4px; font-size: 13px; line-height: 1.5; color: #9aa5ba; }
+  #coach p.aim { color: #7fb08f; }
+  #coach .row2 { display: flex; gap: 7px; margin-top: 11px; align-items: center; }
+  #coach button { padding: 7px 13px; font-size: 13px; border-radius: 7px; }
+  #coach .clock { margin-left: auto; font-variant-numeric: tabular-nums;
+                  font-size: 19px; color: #cfd6e4; display: none; }
+  #coach .clock.on { display: block; }
+  #coach .pips { display: flex; gap: 4px; margin-top: 9px; }
+  #coach .pips i { flex: 1; height: 3px; border-radius: 2px; background: #232c3d; }
+  #coach .pips i.done { background: #3f7fbf; }
+  #coach .pips i.here { background: #7fb08f; }
 </style>
 </head>
 
@@ -154,6 +177,23 @@
                    <kbd>V</kbd> mood &nbsp; <kbd>space</kbd> applause &nbsp;
                    <kbd>X</kbd> cough &nbsp; <kbd>R</kbd> reset pose &nbsp;
                    <kbd>Enter</kbd> start/stop session</span></div>
+</div>
+
+<!-- ========================================================================
+     COACH CARD — the ladder, one rung at a time
+     ===================================================================== -->
+<div id="coach">
+  <div class="rung" id="coachRung">—</div>
+  <h3 id="coachName">—</h3>
+  <p id="coachFacing">—</p>
+  <p class="aim" id="coachAim">—</p>
+  <div class="pips" id="coachPips"></div>
+  <div class="row2">
+    <button id="coachStart">Start</button>
+    <button id="coachDown" class="ghost">Easier</button>
+    <button id="coachUp" class="ghost">Harder</button>
+    <span class="clock" id="coachClock">0:00</span>
+  </div>
 </div>
 
 <!-- ========================================================================
@@ -2432,6 +2472,116 @@ const Session = {
 };
 
 /* =========================================================================
+   6e. The ladder — graduated exposure, which is the actual product
+   ------------------------------------------------------------------------
+   From the brief: "Roughly the shape of graduated exposure therapy — this
+   is the actual product, the rest is scenery." Someone who is genuinely
+   afraid cannot start in a full auditorium. They start in an empty room,
+   then five friendly people, then thirty, then a hall, on their own
+   schedule.
+
+   Until now every rung existed only as two separate dials you had to know
+   the keys for. A person who is frightened should not have to operate a
+   settings panel; they should be told what they are about to face, face it,
+   and be asked whether they want to go up.
+   ====================================================================== */
+const LADDER = [
+  {
+    name: 'An empty hall',
+    crowd: 0, mood: 0, house: true, goal: 45,
+    facing: 'Nobody. The room, the stage, and your own voice in it.',
+    aim: 'Speak for 45 seconds. It does not matter what about.'
+  },
+  {
+    name: 'Five friendly faces',
+    crowd: 1, mood: 0, house: true, goal: 60,
+    facing: 'Five people, all attentive, all on your side.',
+    aim: 'Speak for a minute and look at each of them at least once.'
+  },
+  {
+    name: 'Twenty, mixed',
+    crowd: 2, mood: 1, house: true, goal: 90,
+    facing: 'Twenty people. Most are listening. A couple are not.',
+    aim: 'Ninety seconds. Notice the ones not listening, and keep going anyway.'
+  },
+  {
+    name: 'A full hall',
+    crowd: 5, mood: 2, house: true, goal: 120,
+    facing: 'A full house, and plenty of them are checking their phones.',
+    aim: 'Two minutes. Spread your attention across the whole room, not one safe corner.'
+  },
+  {
+    name: 'Full hall, every eye',
+    crowd: 5, mood: 3, house: true, goal: 150, pressure: true,
+    facing: 'A full house with every single person watching you, a clock running, ' +
+            'and the occasional cough.',
+    aim: 'Two and a half minutes. This is the top of the ladder.'
+  }
+];
+
+const Ladder = {
+  stage: 0,
+  reached: 0,
+  KEY: 'sv.ladder.reached',
+
+  load: function () {
+    /* Which rung you got to is worth remembering between visits — resuming
+       where you left off is most of what makes graduated exposure a course
+       rather than a demo. Nothing else is stored, and it never leaves the
+       browser. Open question 4 in the brief asks whether sessions should
+       persist; this is the smallest useful answer to it. */
+    try {
+      const v = parseInt(window.localStorage.getItem(this.KEY), 10);
+      if (!isNaN(v)) { this.reached = clamp(v, 0, LADDER.length - 1); }
+    } catch (e) { /* private mode, or storage blocked — carry on at rung 1 */ }
+    this.stage = this.reached;
+  },
+
+  save: function () {
+    try { window.localStorage.setItem(this.KEY, String(this.reached)); }
+    catch (e) { /* not worth failing a session over */ }
+  },
+
+  current: function () { return LADDER[this.stage]; },
+
+  /* Put the room into the state this rung describes. */
+  apply: function (scene) {
+    const s = this.current();
+    scene.setAttribute('sv-crowd', 'preset', s.crowd);
+    scene.setAttribute('sv-crowd', 'mood', s.mood);
+    const l = scene.components['sv-lighting'];
+    if (l) { l.setHouse(s.house); }
+    console.log('[sv] rung ' + (this.stage + 1) + '/' + LADDER.length + ' — ' + s.name);
+  },
+
+  /* Moving to a rung must NOT mark it reached. Only holding a session for
+     the rung's target does that, in svToggleSession. Promoting here made the
+     gate dead — `stage > reached` could never be true, so Up stayed enabled
+     forever and you could click from an empty hall to a full one without
+     ever speaking. Which is precisely the thing graduated exposure exists to
+     prevent. */
+  go: function (scene, i) {
+    this.stage = clamp(i, 0, LADDER.length - 1);
+    this.apply(scene);
+  }
+};
+
+/* Pressure events for the top rung: a clock, and coughs you cannot predict.
+   Deliberately only at the top — an unpredictable noise is not exposure for
+   someone who has not yet managed five friendly faces, it is just unkind. */
+const Pressure = {
+  nextCough: 0,
+  arm: function (now) { this.nextCough = now + 12000 + Math.random() * 18000; },
+  tick: function (now) {
+    if (!Session.running || !Ladder.current().pressure) { return; }
+    if (now > this.nextCough) {
+      if (window.svCough) { window.svCough(); }
+      this.nextCough = now + 14000 + Math.random() * 22000;
+    }
+  }
+};
+
+/* =========================================================================
    6c. sv-audio — keeps the listener on your head and the room listening
    ====================================================================== */
 AFRAME.registerComponent('sv-audio', {
@@ -2466,6 +2616,8 @@ AFRAME.registerComponent('sv-audio', {
     /* The session reads the same mic sample and the same camera the scene
        is already using, so measuring costs almost nothing. */
     Session.tick(t, cam);
+    Pressure.tick(t);
+    if (window.svTickCoach) { window.svTickCoach(t); }
   }
 });
 
@@ -2901,6 +3053,10 @@ AFRAME.registerComponent('sv-snapturn', {
     }
     lobby.classList.add('gone');
     document.getElementById('devpanel').classList.add('on');
+    Ladder.load();
+    Ladder.apply(scene);
+    coachEl.classList.add('on');
+    renderCoach();
     setTimeout(function () { lobby.style.display = 'none'; }, 500);
 
     /* If a headset is present, go straight in. enterVR() must be called from
@@ -3017,6 +3173,50 @@ AFRAME.registerComponent('sv-snapturn', {
     repEl.classList.add('on');
   }
 
+  /* ---------------------------------------------------------- ladder ---
+     A frightened person should not have to operate a settings panel. The
+     coach card names the rung, says what is out there, gives one thing to
+     aim at, and offers exactly three buttons. */
+  const coachEl = document.getElementById('coach');
+
+  function renderCoach () {
+    const s = Ladder.current();
+    document.getElementById('coachRung').textContent =
+      'Rung ' + (Ladder.stage + 1) + ' of ' + LADDER.length;
+    document.getElementById('coachName').textContent = s.name;
+    document.getElementById('coachFacing').textContent = s.facing;
+    document.getElementById('coachAim').textContent = s.aim;
+
+    document.getElementById('coachPips').innerHTML = LADDER.map(function (_, i) {
+      const cls = i === Ladder.stage ? 'here' : (i <= Ladder.reached ? 'done' : '');
+      return '<i class="' + cls + '"></i>';
+    }).join('');
+
+    document.getElementById('coachDown').disabled = Ladder.stage === 0;
+    /* You may always step DOWN, but only up to a rung you have reached or
+       the next one. Skipping straight to a full hall is how someone gets
+       hurt and stops coming back. */
+    document.getElementById('coachUp').disabled =
+      Ladder.stage >= LADDER.length - 1 || Ladder.stage > Ladder.reached;
+    document.getElementById('coachStart').textContent =
+      Session.running ? 'Finish' : 'Start';
+  }
+
+  window.svGoRung = function (i) { Ladder.go(scene, i); renderCoach(); };
+
+  /* Counts UP to the rung's target rather than down to zero: a countdown
+     tells you how long you have left to endure, which is exactly the wrong
+     feeling. */
+  window.svTickCoach = function (t) {
+    const clock = document.getElementById('coachClock');
+    if (!Session.running) { clock.classList.remove('on'); return; }
+    clock.classList.add('on');
+    const el = (t - Session.t0) / 1000;
+    const goal = Ladder.current().goal;
+    clock.textContent = fmtTime(el) + ' / ' + fmtTime(goal);
+    clock.style.color = el >= goal ? '#7fb08f' : '#cfd6e4';
+  };
+
   function setSessionUI (on) {
     document.getElementById('btnSession').textContent = on ? 'Stop session' : 'Start session';
     document.getElementById('sessState').textContent = on ? 'recording' : 'idle';
@@ -3027,19 +3227,50 @@ AFRAME.registerComponent('sv-snapturn', {
     if (Session.running) {
       const r = Session.stop(now);
       setSessionUI(false);
-      /* Applause is the reward, so it lands with the report. */
       const c = scene.components['sv-crowd'];
       const n = c ? CROWD_PRESETS[c.data.preset] : 0;
       if (n > 0) { Room.applause(Math.max(4, n), 4.5); }
-      if (r) { showReport(r); }
+
+      /* Only offer the next rung if they held this one. The whole point of
+         graduated exposure is that the next step waits until this one has
+         stopped being frightening. */
+      if (r) {
+        const held = r.seconds >= Ladder.current().goal;
+        const last = Ladder.stage >= LADDER.length - 1;
+        if (held && !last) {
+          if (Ladder.stage + 1 > Ladder.reached) {
+            Ladder.reached = Ladder.stage + 1; Ladder.save();
+          }
+          r.lines.unshift('You held ' + Ladder.current().name.toLowerCase() + ' for ' +
+            fmtTime(r.seconds) + '. Rung ' + (Ladder.stage + 2) + ', ' +
+            LADDER[Ladder.stage + 1].name.toLowerCase() + ', is open when you want it.');
+        } else if (held && last) {
+          r.lines.unshift('You held the top of the ladder for ' + fmtTime(r.seconds) + '.');
+        } else {
+          r.lines.unshift('You stopped at ' + fmtTime(r.seconds) + ' of a ' +
+            fmtTime(Ladder.current().goal) + ' target. Stopping early is fine — the ' +
+            'same rung again is worth more than the next one too soon.');
+        }
+        showReport(r);
+      }
+      renderCoach();
     } else {
       repEl.classList.remove('on');
       Session.start(now);
+      Pressure.arm(now);
       setSessionUI(true);
+      renderCoach();
     }
   };
 
   document.getElementById('btnSession').addEventListener('click', window.svToggleSession);
+  document.getElementById('coachStart').addEventListener('click', window.svToggleSession);
+  document.getElementById('coachUp').addEventListener('click', function () {
+    window.svGoRung(Ladder.stage + 1);
+  });
+  document.getElementById('coachDown').addEventListener('click', function () {
+    window.svGoRung(Ladder.stage - 1);
+  });
   document.getElementById('repClose').addEventListener('click', function () {
     repEl.classList.remove('on');
   });
