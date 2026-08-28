@@ -117,9 +117,13 @@
   <div class="row"><button id="btnCrowd">Audience +</button>
                    <button id="btnMood">Mood</button>
                    <span class="stat" id="crowdState">0</span></div>
+  <div class="row"><button id="btnClap">Applause</button>
+                   <button id="btnCough">Cough</button>
+                   <span class="stat" id="roomState">—</span></div>
   <div class="row"><span class="stat" id="devStats">—</span></div>
   <div class="row"><span class="stat"><kbd>L</kbd> lights &nbsp; <kbd>C</kbd> audience &nbsp;
-                   <kbd>V</kbd> mood &nbsp; <kbd>R</kbd> reset pose</span></div>
+                   <kbd>V</kbd> mood &nbsp; <kbd>space</kbd> applause &nbsp;
+                   <kbd>X</kbd> cough &nbsp; <kbd>R</kbd> reset pose</span></div>
 </div>
 
 <!-- ========================================================================
@@ -139,7 +143,8 @@
          sv-hall
          sv-lighting
          sv-truss
-         sv-crowd="preset: 0; mood: 1; triangles: 1800">
+         sv-crowd="preset: 0; mood: 1; triangles: 1800"
+         sv-audio>
 
   <!-- ---- Rig: everything that moves with the speaker --------------------- -->
   <!-- Start behind the lectern (which sits at z = -7.6), facing +z down the
@@ -1812,6 +1817,17 @@ const Mic = {
     if (this.ctx && this.ctx.state === 'suspended') { this.ctx.resume(); }
   },
 
+  /* One AudioContext for the whole page. Browsers cap how many you may
+     open, and two would mean two independent clocks. */
+  audioContext: function () {
+    if (!this.ctx) {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) { return null; }
+      this.ctx = new AC();
+    }
+    return this.ctx;
+  },
+
   sample: function (now) {
     if (!this.ready) { return; }
     this.analyser.getFloatTimeDomainData(this.buf);
@@ -1838,6 +1854,300 @@ const Mic = {
     return { text: 'LOUD', color: '#c25a4e' };
   }
 };
+
+/* =========================================================================
+   6b. Room — everything you hear, synthesised at runtime
+   ------------------------------------------------------------------------
+   No audio files. Every sound here is generated into an AudioBuffer on
+   first use, which keeps the project's zero-asset position intact — there
+   is nothing to licence, nothing to download, and nothing that can 404
+   mid-demo. It also matches the room-studioVR habit of generating textures
+   in the browser rather than shipping them.
+
+   The important one is not the reverb or the applause. It is the MURMUR,
+   and specifically the moment it drops away when you start speaking. That
+   silence is what makes a room feel like it is waiting for you.
+   ====================================================================== */
+const Room = {
+  ready: false, ctx: null,
+  master: null, wet: null, dry: null, conv: null,
+  murmurGain: null, murmurSrc: null,
+  buffers: {},
+  level: 0.5,                 // murmur level with nobody speaking
+  ducked: 0,                  // 0..1, how far the room has gone quiet
+
+  /* ---- graph -------------------------------------------------------- */
+  init: function (ctx) {
+    if (this.ready) { return true; }
+    if (!ctx) { return false; }
+    this.ctx = ctx;
+
+    this.master = ctx.createGain();
+    this.master.gain.value = 0.9;
+    this.master.connect(ctx.destination);
+
+    /* A dry voice in a big room is instantly wrong, so everything runs
+       through a convolver on a generated impulse response. */
+    this.conv = ctx.createConvolver();
+    this.conv.buffer = this.makeIR(2.3, 2.6);
+    this.wet = ctx.createGain(); this.wet.gain.value = 0.34;
+    this.dry = ctx.createGain(); this.dry.gain.value = 0.85;
+    this.conv.connect(this.wet);
+    this.wet.connect(this.master);
+    this.dry.connect(this.master);
+
+    this.ready = true;
+    console.log('[sv] room audio up @ ' + ctx.sampleRate + 'Hz');
+    return true;
+  },
+
+  /* Send a node to both the dry path and the reverb. */
+  route: function (node) { node.connect(this.dry); node.connect(this.conv); },
+
+  /* ---- impulse response: decaying noise with a little early structure */
+  makeIR: function (seconds, decay) {
+    const rate = this.ctx.sampleRate;
+    const len = Math.max(1, Math.floor(rate * seconds));
+    const buf = this.ctx.createBuffer(2, len, rate);
+    for (let c = 0; c < 2; c++) {
+      const d = buf.getChannelData(c);
+      for (let i = 0; i < len; i++) {
+        const t = i / len;
+        d[i] = (Math.random() * 2 - 1) * Math.pow(1 - t, decay);
+      }
+      // a few discrete early reflections so it reads as a room, not a wash
+      [0.011, 0.019, 0.031, 0.043, 0.062].forEach(function (ms, k) {
+        const i = Math.floor(ms * rate);
+        if (i < len) { d[i] += (k % 2 ? -1 : 1) * (0.55 - k * 0.08); }
+      });
+    }
+    return buf;
+  },
+
+  /* ---- crowd babble ---------------------------------------------------
+     Built as one long loop rather than live voices: hundreds of oscillators
+     would cost more than the entire renderer. Noise shaped into overlapping
+     syllable-length bumps in the speech band reads as a room full of people
+     talking, which is all it has to do under a stereo bed. */
+  makeMurmur: function (seconds) {
+    const rate = this.ctx.sampleRate;
+    const len = Math.floor(rate * seconds);
+    const buf = this.ctx.createBuffer(2, len, rate);
+
+    for (let c = 0; c < 2; c++) {
+      const d = buf.getChannelData(c);
+      let lp = 0, lp2 = 0;
+      for (let i = 0; i < len; i++) {
+        const n = Math.random() * 2 - 1;
+        lp += (n - lp) * 0.11;            // one-pole: tilts the noise darker
+        lp2 += (lp - lp2) * 0.11;
+        d[i] = lp2;
+      }
+      // overlapping syllables
+      const voices = 26;
+      for (let v = 0; v < voices; v++) {
+        let p = Math.random() * len;
+        while (p < len) {
+          const dur = Math.floor(rate * (0.07 + Math.random() * 0.16));
+          const amp = 0.25 + Math.random() * 0.55;
+          for (let k = 0; k < dur && p + k < len; k++) {
+            const e = Math.sin(Math.PI * (k / dur));
+            d[(p + k) | 0] *= 1 + e * amp;
+          }
+          p += dur + rate * (0.05 + Math.random() * 0.30);
+        }
+      }
+      // normalise
+      let peak = 0;
+      for (let i = 0; i < len; i++) { const a = Math.abs(d[i]); if (a > peak) { peak = a; } }
+      if (peak > 0) { for (let i = 0; i < len; i++) { d[i] /= peak * 3.2; } }
+    }
+    return buf;
+  },
+
+  startMurmur: function () {
+    if (!this.ready || this.murmurSrc) { return; }
+    if (!this.buffers.murmur) { this.buffers.murmur = this.makeMurmur(9); }
+
+    const src = this.ctx.createBufferSource();
+    src.buffer = this.buffers.murmur;
+    src.loop = true;
+
+    const band = this.ctx.createBiquadFilter();
+    band.type = 'bandpass'; band.frequency.value = 620; band.Q.value = 0.55;
+
+    this.murmurGain = this.ctx.createGain();
+    this.murmurGain.gain.value = 0;
+
+    src.connect(band); band.connect(this.murmurGain);
+    this.route(this.murmurGain);
+    src.start();
+    this.murmurSrc = src;
+    this.setMurmur(this.level);
+  },
+
+  setMurmur: function (v) {
+    this.level = v;
+    if (!this.murmurGain) { return; }
+    this.murmurGain.gain.setTargetAtTime(v * (1 - this.ducked * 0.94),
+                                         this.ctx.currentTime, 0.35);
+  },
+
+  /* The room going quiet when you start. Slow to fall, slower to return —
+     an audience stops talking quickly and starts again reluctantly. */
+  duck: function (amount) {
+    if (!this.ready || !this.murmurGain) { return; }
+    const a = clamp(amount, 0, 1);
+    this.ducked += (a - this.ducked) * (a > this.ducked ? 0.10 : 0.012);
+    this.murmurGain.gain.setTargetAtTime(
+      this.level * (1 - this.ducked * 0.94), this.ctx.currentTime, 0.25);
+  },
+
+  /* ---- one-shots ----------------------------------------------------- */
+  makeBurst: function (seconds, tone, sharp) {
+    const rate = this.ctx.sampleRate;
+    const len = Math.floor(rate * seconds);
+    const buf = this.ctx.createBuffer(1, len, rate);
+    const d = buf.getChannelData(0);
+    let lp = 0;
+    for (let i = 0; i < len; i++) {
+      const t = i / len;
+      const n = Math.random() * 2 - 1;
+      lp += (n - lp) * tone;
+      d[i] = lp * Math.pow(1 - t, sharp);
+    }
+    return buf;
+  },
+
+  /* A cough from the third row on the left has to come FROM there. */
+  at: function (kind, x, y, z, vol) {
+    if (!this.ready) { return; }
+    const key = kind;
+    if (!this.buffers[key]) {
+      this.buffers[key] = kind === 'cough'
+        ? this.makeBurst(0.34, 0.42, 5.5)
+        : this.makeBurst(0.12, 0.75, 9.0);
+    }
+    const src = this.ctx.createBufferSource();
+    src.buffer = this.buffers[key];
+    src.playbackRate.value = 0.85 + Math.random() * 0.35;
+
+    const g = this.ctx.createGain();
+    g.gain.value = (vol === undefined ? 0.55 : vol);
+
+    const pan = this.ctx.createPanner();
+    pan.panningModel = 'HRTF';
+    pan.distanceModel = 'inverse';
+    pan.refDistance = 2.5;
+    pan.maxDistance = 40;
+    if (pan.positionX) {
+      pan.positionX.value = x; pan.positionY.value = y; pan.positionZ.value = z;
+    } else { pan.setPosition(x, y, z); }
+
+    src.connect(g); g.connect(pan);
+    this.route(pan);
+    src.start();
+  },
+
+  /* Applause is the reward, so it has to be loud and long. Synthesised as
+     one buffer of thousands of claps rather than thousands of nodes. */
+  makeApplause: function (seconds, people) {
+    const rate = this.ctx.sampleRate;
+    const len = Math.floor(rate * seconds);
+    const buf = this.ctx.createBuffer(2, len, rate);
+    const clapLen = Math.floor(rate * 0.012);
+
+    for (let c = 0; c < 2; c++) {
+      const d = buf.getChannelData(c);
+      const claps = Math.floor(people * seconds * 3.2);
+      for (let n = 0; n < claps; n++) {
+        /* Ramp in over ~250ms, hold, then fall away — a room does not start
+           or stop clapping all at once. */
+        const t = Math.random();
+        const shaped = Math.pow(t, 0.35) * (t > 0.72 ? (1 - t) / 0.28 : 1);
+        if (Math.random() > shaped * 0.95 + 0.05) { continue; }
+        const at = Math.floor(t * (len - clapLen));
+        const amp = (0.25 + Math.random() * 0.75) / Math.sqrt(people);
+        for (let k = 0; k < clapLen; k++) {
+          d[at + k] += (Math.random() * 2 - 1) * amp * Math.pow(1 - k / clapLen, 2.2);
+        }
+      }
+    }
+    return buf;
+  },
+
+  applause: function (people, seconds) {
+    if (!this.ready) { return; }
+    const key = 'applause' + people;
+    if (!this.buffers[key]) {
+      this.buffers[key] = this.makeApplause(seconds || 4.5, Math.max(4, people));
+    }
+    const src = this.ctx.createBufferSource();
+    src.buffer = this.buffers[key];
+    const g = this.ctx.createGain();
+    g.gain.value = 1.0;
+    src.connect(g);
+    this.route(g);
+    src.start();
+    return src;
+  },
+
+  /* Web Audio's listener has to follow the head or positional cues are
+     nonsense the moment you turn round. */
+  setListener: function (p, fwd, up) {
+    if (!this.ready) { return; }
+    const L = this.ctx.listener;
+    if (L.positionX) {
+      const t = this.ctx.currentTime;
+      L.positionX.setValueAtTime(p.x, t);
+      L.positionY.setValueAtTime(p.y, t);
+      L.positionZ.setValueAtTime(p.z, t);
+      L.forwardX.setValueAtTime(fwd.x, t);
+      L.forwardY.setValueAtTime(fwd.y, t);
+      L.forwardZ.setValueAtTime(fwd.z, t);
+      L.upX.setValueAtTime(up.x, t);
+      L.upY.setValueAtTime(up.y, t);
+      L.upZ.setValueAtTime(up.z, t);
+    } else {
+      L.setPosition(p.x, p.y, p.z);
+      L.setOrientation(fwd.x, fwd.y, fwd.z, up.x, up.y, up.z);
+    }
+  }
+};
+
+/* =========================================================================
+   6c. sv-audio — keeps the listener on your head and the room listening
+   ====================================================================== */
+AFRAME.registerComponent('sv-audio', {
+  init: function () {
+    this.p = new THREE.Vector3();
+    this.q = new THREE.Quaternion();
+    this.fwd = new THREE.Vector3();
+    this.up = new THREE.Vector3();
+    this.next = 0;
+  },
+
+  tick: function (t) {
+    if (!Room.ready) { return; }
+    const cam = this.el.sceneEl.camera;
+    if (!cam) { return; }
+
+    if (t > this.next) {
+      this.next = t + 80;
+      cam.getWorldPosition(this.p);
+      cam.getWorldQuaternion(this.q);
+      this.fwd.set(0, 0, -1).applyQuaternion(this.q);
+      this.up.set(0, 1, 0).applyQuaternion(this.q);
+      Room.setListener(this.p, this.fwd, this.up);
+    }
+
+    /* The murmur drops as soon as you speak. Threshold is deliberately low:
+       the room should go quiet when you START, not once you are loud. */
+    if (Mic.ready) {
+      Room.duck(Mic.db > -46 ? 1 : 0);
+    }
+  }
+});
 
 /* =========================================================================
    7. sv-hud — soft-follow panel
@@ -2189,6 +2499,10 @@ AFRAME.registerComponent('sv-snapturn', {
       const stepMood = function () { window.svStepMood(); };
       if (handR) { handR.addEventListener('thumbstickdown', stepMood); }
       if (handL) { handL.addEventListener('thumbstickdown', stepMood); }
+
+      // right trigger applauds, left trigger coughs — the coach panel in kit form
+      if (handR) { handR.addEventListener('triggerdown', function () { window.svApplause(); }); }
+      if (handL) { handL.addEventListener('triggerdown', function () { window.svCough(); }); }
     };
 
     if (this.el.sceneEl.hasLoaded) { bind(); }
@@ -2259,6 +2573,12 @@ AFRAME.registerComponent('sv-snapturn', {
 
   btnEnter.addEventListener('click', function () {
     Mic.resume();
+    /* Must happen inside the click: an AudioContext created without a user
+       gesture starts suspended and stays silent. */
+    if (Room.init(Mic.audioContext())) {
+      Mic.resume();
+      Room.startMurmur();
+    }
     lobby.classList.add('gone');
     document.getElementById('devpanel').classList.add('on');
     setTimeout(function () { lobby.style.display = 'none'; }, 500);
@@ -2308,6 +2628,33 @@ AFRAME.registerComponent('sv-snapturn', {
   };
   document.getElementById('btnMood').addEventListener('click', window.svStepMood);
 
+  /* Reactions. Triggered by hand for now; the brief wants them driven by
+     the speaker's own audio later (a pause after a punchline cueing a
+     laugh), which is why they take a crowd size rather than being fixed. */
+  window.svApplause = function () {
+    const c = scene.components['sv-crowd'];
+    const n = c ? Math.max(4, CROWD_PRESETS[c.data.preset]) : 20;
+    Room.applause(n, 4.5);
+    const el = document.getElementById('roomState');
+    if (el) { el.textContent = 'applause · ' + n; }
+  };
+
+  /* A cough has to come from a seat, not from the middle of your head. */
+  window.svCough = function () {
+    const c = scene.components['sv-crowd'];
+    let x = -3, y = 1.3, z = 2;
+    if (c && c.solidData && c.solidData.length) {
+      const p = c.solidData[Math.floor(Math.random() * c.solidData.length)];
+      x = p.x; y = p.headY; z = p.z;
+    }
+    Room.at('cough', x, y, z, 0.7);
+    const el = document.getElementById('roomState');
+    if (el) { el.textContent = 'cough @ ' + x.toFixed(1) + ',' + z.toFixed(1); }
+  };
+
+  document.getElementById('btnClap').addEventListener('click', window.svApplause);
+  document.getElementById('btnCough').addEventListener('click', window.svCough);
+
   window.addEventListener('keydown', function (e) {
     if (e.code === 'KeyL') {
       const l = scene.components['sv-lighting'];
@@ -2315,6 +2662,8 @@ AFRAME.registerComponent('sv-snapturn', {
     }
     if (e.code === 'KeyC') { window.svStepCrowd(); }
     if (e.code === 'KeyV') { window.svStepMood(); }
+    if (e.code === 'Space') { e.preventDefault(); window.svApplause(); }
+    if (e.code === 'KeyX') { window.svCough(); }
   });
 
   scene.addEventListener('loaded', function () {
