@@ -1,90 +1,239 @@
-"""Generate varied rigged humans for the audience, headless.
+"""Generate varied, clothed, seated humans for the audience front rows.
 
-    ~/tools/blender/blender --background --python tools/generate_humans.py -- <out_dir>
+    ~/tools/blender/blender --background --python tools/generate_humans.py -- <out_dir> [count]
 
-Requires Blender 4.5 with the MPFB extension installed (see PROJECT.md,
-"Tooling"). Each figure is driven by a macro dict — gender, age, muscle,
-weight, height, proportions, ethnicity, all 0..1 floats — which is the
-"generate forty different audience members" plan from the brief made real.
+Requires Blender 4.5 + the MPFB extension, plus the CC0 "MakeHuman system
+assets" pack extracted into MPFB's user data dir (see PROJECT.md, Tooling).
 
-Licence: the MakeHuman base mesh that every generated character derives
-from was explicitly released as CC0 in September 2020 (the statement, with
-the named copyright holders, is in the header of MPFB's data/3dobjs/base.obj).
-MPFB itself is GPL, which covers the tool, not its output.
+Licences, settled at the source:
+- The MakeHuman base mesh was "explicitly released as CC0 in september 2020"
+  - stated in the header of MPFB's own data/3dobjs/base.obj.
+- The system assets pack is distributed as makehuman_system_assets_cc0.zip,
+  every asset in it listed CC0 on its page.
+- MPFB itself is GPL, which covers the tool, not its output.
 
-Export notes, learned by rendering rather than reading:
-- export_apply=True is what REMOVES the helper scaffolding (the "skirt" and
-  the face curtain) — it bakes the mask modifier that hides them. Without it
-  every figure ships wearing its own rigging aids.
-- export_morph=False drops the macro shape keys, which are the difference
-  between 0.9 MB and 12-17 MB per figure.
+Hard-won facts baked in below, each found by rendering, not reading:
+- Rig FIRST, clothes after, with set_up_rigging=True - clothes added before
+  the rig never follow the pose, and render as jeans standing beside a
+  seated pair of legs.
+- Shape keys must be collapsed (apply_mix) before any modifier can be
+  applied; the macro system leaves dozens of them.
+- export_apply removes MPFB's helper scaffolding; export_morph=False is the
+  difference between ~1 MB and ~17 MB.
+- The seated arm pose that reads as "audience" is upperarm z=?70 with a 45?
+  elbow: hands folded in the lap. Arms swept forward or raised read as
+  zombies or surrender.
+- The hips KEEP their standing height through the pose bake - the thighs
+  rotate away from them - so the figure "sits in the air" with its feet
+  dangling well above y=0. Scene placement must go by measured seat-contact
+  height per figure, not by feet.
 """
+import math
 import os
 import sys
 import traceback
 
 import bpy
 
+DATA = os.path.expanduser(
+    "~/.config/blender/4.5/extensions/.user/user_default/mpfb/data")
+
+# hands folded in the lap - candidate B of the rendered arm sweep
+# Hands folded in the lap, thighs horizontal, shins vertical - candidate B
+# of the rendered arm sweep. Splitting the leg bend across upperleg01+02
+# was tried to spare the garment fit and made it worse: the silhouette
+# stopped reading as seated and became a splay. One joint, full angle.
+POSE = {
+    "upperleg01.L": (-88, 0, -6), "upperleg01.R": (-88, 0, 6),
+    "lowerleg01.L": (86, 0, 0),   "lowerleg01.R": (86, 0, 0),
+    "upperarm01.L": (0, 0, -70),  "upperarm01.R": (0, 0, 70),
+    "lowerarm01.L": (45, 0, 0),   "lowerarm01.R": (45, 0, 0),
+    "spine03": (6, 0, 0), "spine02": (4, 0, 0),
+}
+
+MALE_SUITS = ["male_casualsuit01", "male_casualsuit02", "male_casualsuit03",
+              "male_casualsuit04", "male_casualsuit05", "male_casualsuit06"]
+FEMALE_SUITS = ["female_casualsuit01", "female_casualsuit02",
+                "female_elegantsuit01"]
+HAIR = ["short01", "short02", "short03", "short04", "bob01", "bob02",
+        "long01", "ponytail01", "afro01"]
+SHOES = ["shoes01", "shoes02", "shoes03", "shoes05", "shoes06"]
+
+
+def rad(d):
+    return d * math.pi / 180
+
 
 def hash01(i, salt):
-    """Deterministic per-index pseudo-random 0..1, same shape as the one in
-    index.html — a given seat keeps its body across regenerations."""
-    import math
     x = math.sin(i * 127.1 + salt * 311.7) * 43758.5453
     return x - math.floor(x)
 
 
 def macro_for(i):
-    """A plausible, varied audience member. Deliberately mid-heavy: real
-    rooms are mostly unremarkable bodies with a few outliers."""
     return {
-        "gender": hash01(i, 1),
-        "age": 0.25 + hash01(i, 2) * 0.6,
-        "muscle": 0.3 + hash01(i, 3) * 0.4,
-        "weight": 0.3 + hash01(i, 4) * 0.45,
-        "proportions": 0.35 + hash01(i, 5) * 0.3,
-        "height": 0.3 + hash01(i, 6) * 0.4,
+        "gender": 0.15 + 0.7 * ((i % 2) + hash01(i, 1) * 0.6 - 0.3),
+        "age": 0.3 + hash01(i, 2) * 0.5,
+        "muscle": 0.35 + hash01(i, 3) * 0.3,
+        "weight": 0.35 + hash01(i, 4) * 0.35,
+        "proportions": 0.4 + hash01(i, 5) * 0.2,
+        "height": 0.35 + hash01(i, 6) * 0.3,
         "cupsize": 0.4 + hash01(i, 7) * 0.2,
         "firmness": 0.5,
-        "race": {
-            "asian": hash01(i, 8),
-            "caucasian": hash01(i, 9),
-            "african": hash01(i, 10),
-        },
+        "race": {"asian": hash01(i, 8), "caucasian": hash01(i, 9),
+                 "african": hash01(i, 10)},
     }
+
+
+def clothe(HumanService, mesh, i, male):
+    suit = (MALE_SUITS if male else FEMALE_SUITS)[
+        int(hash01(i, 12) * 10) % len(MALE_SUITS if male else FEMALE_SUITS)]
+    hair = HAIR[int(hash01(i, 13) * 10) % len(HAIR)]
+    shoe = SHOES[int(hash01(i, 14) * 10) % len(SHOES)]
+    for kind, name in (("Clothes", "clothes/%s/%s.mhclo" % (suit, suit)),
+                       ("Hair", "hair/%s/%s.mhclo" % (hair, hair)),
+                       ("Clothes", "clothes/%s/%s.mhclo" % (shoe, shoe))):
+        path = os.path.join(DATA, name)
+        if os.path.exists(path):
+            HumanService.add_mhclo_asset(path, mesh, asset_type=kind,
+                                         set_up_rigging=True,
+                                         interpolate_weights=True)
+
+
+def bake_pose(arm):
+    bpy.ops.object.select_all(action="DESELECT")
+    arm.select_set(True)
+    bpy.context.view_layer.objects.active = arm
+    bpy.ops.object.mode_set(mode="POSE")
+    for name, (x, y, z) in POSE.items():
+        pb = arm.pose.bones.get(name)
+        if pb:
+            pb.rotation_mode = "XYZ"
+            pb.rotation_euler = (rad(x), rad(y), rad(z))
+    bpy.ops.object.mode_set(mode="OBJECT")
+
+    for o in [o for o in bpy.data.objects if o.type == "MESH"]:
+        bpy.ops.object.select_all(action="DESELECT")
+        o.select_set(True)
+        bpy.context.view_layer.objects.active = o
+        if o.data.shape_keys:
+            bpy.ops.object.shape_key_remove(all=True, apply_mix=True)
+        for m in list(o.modifiers):
+            if m.type in ("ARMATURE", "MASK"):
+                try:
+                    bpy.ops.object.modifier_apply(modifier=m.name)
+                except Exception:
+                    pass
+            elif m.type == "SUBSURF":
+                o.modifiers.remove(m)          # never ship subdivision
+
+
+def split_head(arm, body):
+    """Separate everything above the neck into its own object, pivoted at
+    the neck joint, so the in-scene attention code can turn it."""
+    # Blender is Z-up: the vertical axis here is z, and the glTF exporter
+    # does the Y-up conversion on the way out. Cutting on y would separate
+    # the front of the body from the back.
+    neck = arm.data.bones.get("neck02") or arm.data.bones.get("neck01")
+    cut = (arm.matrix_world @ neck.head_local).z
+
+    bpy.ops.object.select_all(action="DESELECT")
+    body.select_set(True)
+    bpy.context.view_layer.objects.active = body
+    bpy.ops.object.mode_set(mode="EDIT")
+    bpy.ops.mesh.select_all(action="DESELECT")
+    bpy.ops.object.mode_set(mode="OBJECT")
+    for v in body.data.vertices:
+        v.select = v.co.z > cut
+    bpy.ops.object.mode_set(mode="EDIT")
+    bpy.ops.mesh.separate(type="SELECTED")
+    bpy.ops.object.mode_set(mode="OBJECT")
+
+    head = [o for o in bpy.context.selected_objects if o != body][-1]
+    head.name = "HeadPart"
+    # pivot at the neck: origin must sit on the cut plane, mid-skull
+    bpy.context.scene.cursor.location = (0, 0, cut)
+    bpy.ops.object.select_all(action="DESELECT")
+    head.select_set(True)
+    bpy.context.view_layer.objects.active = head
+    bpy.ops.object.origin_set(type="ORIGIN_CURSOR")
+    return head, cut
+
+
+def decimate(obj, ratio):
+    bpy.ops.object.select_all(action="DESELECT")
+    obj.select_set(True)
+    bpy.context.view_layer.objects.active = obj
+    mod = obj.modifiers.new("dec", "DECIMATE")
+    mod.ratio = ratio
+    bpy.ops.object.modifier_apply(modifier="dec")
 
 
 def generate(out_dir, count):
     from bl_ext.user_default.mpfb.services.humanservice import HumanService
-
     os.makedirs(out_dir, exist_ok=True)
+
     for i in range(count):
         bpy.ops.wm.read_homefile(use_empty=True)
-
-        mesh = HumanService.create_human(macro_detail_dict=macro_for(i))
+        macros = macro_for(i)
+        mesh = HumanService.create_human(macro_detail_dict=macros)
         HumanService.add_builtin_rig(mesh, "default", import_weights=True)
+        arm = [o for o in bpy.data.objects if o.type == "ARMATURE"][0]
 
-        # Plain skin material; tone varies per figure. Textured skin can come
-        # later from the CC0 system assets — this keeps the figure smaller
-        # than any skin texture would be.
-        tone = 0.25 + hash01(i, 11) * 0.55
+        clothe(HumanService, mesh, i, macros["gender"] > 0.5)
+        bake_pose(arm)
+
+        # skin material for the body mesh (clothes keep their own)
+        tone = 0.3 + hash01(i, 11) * 0.5
         mat = bpy.data.materials.new("skin")
         mat.use_nodes = True
-        bsdf = mat.node_tree.nodes.get("Principled BSDF")
-        bsdf.inputs["Base Color"].default_value = (
-            tone, tone * 0.72, tone * 0.55, 1)
-        bsdf.inputs["Roughness"].default_value = 0.8
+        b = mat.node_tree.nodes.get("Principled BSDF")
+        b.inputs["Base Color"].default_value = (tone, tone * 0.72,
+                                                tone * 0.55, 1)
+        b.inputs["Roughness"].default_value = 0.85
         mesh.data.materials.clear()
         mesh.data.materials.append(mat)
 
+        head, cut = split_head(arm, mesh)
+        print("GEN person_%02d neck at y=%.3f" % (i, cut))
+
+        # hair follows the head; give it the head's pivot too
+        for o in bpy.data.objects:
+            if o.type == "MESH" and any(h in o.name for h in HAIR):
+                bpy.context.scene.cursor.location = (0, 0, cut)
+                bpy.ops.object.select_all(action="DESELECT")
+                o.select_set(True)
+                bpy.context.view_layer.objects.active = o
+                bpy.ops.object.origin_set(type="ORIGIN_CURSOR")
+                o.name = "HeadPart_hair"
+
+        # Decimation has to stay gentle, and the reason is fit, not looks.
+        # The body and its clothes are separate meshes fitted to each other
+        # vertex by vertex; decimating them independently moves their
+        # surfaces apart and the body erupts through the shirt. Hair is
+        # worse - below about 0.5 it stops being strands and becomes white
+        # shrapnel round the neck. Both found by rendering. The budget is
+        # not the constraint: eight figures at 5k tris is nothing against
+        # the measured headroom.
+        # Only the BODY is decimated. Clothes and hair are fitted meshes -
+        # every vertex of a garment is tied to the body surface beneath it,
+        # so collapsing its edges tears the fit open: jeans shear into
+        # shards and forearms punch through the trouser leg. Verified by
+        # rendering one figure large. They are cheap anyway; the body is
+        # the part with the polygons.
+        for o in [o for o in bpy.data.objects if o.type == "MESH"]:
+            fitted = any(h in o.name for h in HAIR) or \
+                any(c in o.name for c in MALE_SUITS + FEMALE_SUITS + SHOES)
+            if fitted:
+                continue
+            decimate(o, 0.6 if o.name.startswith("HeadPart") else 0.45)
+
         bpy.ops.object.select_all(action="SELECT")
+        for o in bpy.data.objects:
+            if o.type == "ARMATURE":
+                o.select_set(False)
         path = os.path.join(out_dir, "person_%02d.glb" % i)
-        bpy.ops.export_scene.gltf(
-            filepath=path,
-            use_selection=True,
-            export_apply=True,      # bakes the mask: removes helper geometry
-            export_morph=False,     # drops shape keys: 0.9 MB not 12-17 MB
-        )
+        bpy.ops.export_scene.gltf(filepath=path, use_selection=True,
+                                  export_apply=True, export_morph=False)
         print("GEN person_%02d %.2f MB" % (i, os.path.getsize(path) / 1048576))
 
 
@@ -92,7 +241,7 @@ if __name__ == "__main__":
     try:
         argv = sys.argv[sys.argv.index("--") + 1:]
         out = argv[0] if argv else "/tmp/humans"
-        count = int(argv[1]) if len(argv) > 1 else 8
+        count = int(argv[1]) if len(argv) > 1 else 6
         generate(out, count)
         print("GEN done: %d figures in %s" % (count, out))
     except Exception:

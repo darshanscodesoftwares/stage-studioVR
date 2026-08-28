@@ -416,7 +416,14 @@ function seatList () {
       out.push({ x: x, y: y, z: z, yaw: yaw, row: r });
     }
   }
-  return out;                        // front row first
+  /* Front row first, and WITHIN a row from the centre outward. Seats are
+     filled in this order, so the handful of expensive figures land centre
+     front — where the speaker actually looks — instead of against the left
+     wall, which is where plain left-to-right ordering put them. */
+  out.sort(function (a, b) {
+    return (a.row - b.row) || (Math.abs(a.x) - Math.abs(b.x));
+  });
+  return out;
 }
 
 /* =========================================================================
@@ -1223,6 +1230,21 @@ const MAX_SKINNED = 8;                 // tier A cap — the eye-contact rows
    paper slivers. 132 pushes the first card back to ~row 8, which is far
    enough that nobody meets one at conversational range. */
 const MAX_SOLID   = 132;               // tier B cap
+
+/* Generated people for the front rows: MPFB-built, clothed, seated, split at
+   the neck so the attention code can turn their heads. Seat-contact height
+   is measured per figure with trimesh at build time, because the pose bake
+   leaves the hips at standing height — the figure "sits in the air", and
+   placing it by its feet would hang it half a metre above the chair. */
+const PEOPLE = [
+  { file: 'person_00', seatY: 0.778 },
+  { file: 'person_01', seatY: 0.866 },
+  { file: 'person_02', seatY: 0.753 },
+  { file: 'person_03', seatY: 0.812 },
+  { file: 'person_04', seatY: 0.756 },
+  { file: 'person_05', seatY: 0.898 }
+];
+const CHAIR_PAN_Y = 0.44;              // chair.glb pan height
 const SEAT_TOP    = 0.50;              // seat pan height — where a seated body starts
 
 /* =========================================================================
@@ -1402,6 +1424,8 @@ AFRAME.registerComponent('sv-crowd', {
       .map(function (h) { return new THREE.Color(h); });
 
     this.buildChairs();
+    this.peopleTemplates = null;
+    this.loadPeople();
     this.apply(this.data.preset);
     console.log('[sv] crowd lab ready — ' + this.seats.length + ' seats');
   },
@@ -1532,6 +1556,84 @@ AFRAME.registerComponent('sv-crowd', {
     });
     this.root.add(group);
     return group;
+  },
+
+  /* ----------------------------------------------- generated people
+     Load the six MPFB figures once and restructure each into a template:
+     body parts under the root, head parts (skull + hair, both pivoted at
+     the neck by the generator) under a HEAD GROUP the attention code can
+     rotate. The lathe figures stay as the fallback until these arrive —
+     nothing can fail to load. */
+  loadPeople: function () {
+    const self = this;
+    const loader = new THREE.GLTFLoader();
+    const templates = [];
+    let remaining = PEOPLE.length;
+
+    PEOPLE.forEach(function (p, idx) {
+      loader.load('assets/people/' + p.file + '.glb', function (gltf) {
+        const root = new THREE.Group();
+        const headGroup = new THREE.Group();
+        /* The generated meshes face +z; the scene's convention is -z-front.
+           The flip container hides that from the aim code entirely. */
+        const flip = new THREE.Group();
+        flip.rotation.y = Math.PI;
+        headGroup.add(flip);
+        headGroup.rotation.order = 'YXZ';
+
+        let neckY = 0;
+        gltf.scene.updateMatrixWorld(true);
+        const meshes = [];
+        gltf.scene.traverse(function (n) { if (n.isMesh) { meshes.push(n); } });
+        meshes.forEach(function (n) {
+          const wp = new THREE.Vector3();
+          n.getWorldPosition(wp);
+          const m = n.clone();
+          m.position.set(0, 0, 0); m.rotation.set(0, 0, 0);
+          if (wp.y > 1.1) {              // neck-pivoted head part
+            neckY = wp.y;
+            flip.add(m);
+          } else {
+            m.position.copy(wp);
+            m.rotation.copy(n.rotation);
+            m.rotation.y += Math.PI;     // face the stage like the head does
+            m.position.z = -m.position.z;
+            root.add(m);
+          }
+        });
+        headGroup.position.set(0, neckY, 0);
+        root.add(headGroup);
+
+        templates[idx] = { root: root, headGroup: headGroup, seatY: p.seatY };
+        remaining--;
+        if (remaining === 0) {
+          self.peopleTemplates = templates;
+          console.log('[sv] ' + templates.length + ' generated people ready');
+          self.apply(self.data.preset);   // upgrade the lathe figures in place
+        }
+      }, undefined, function (err) {
+        remaining--;
+        console.warn('[sv] ' + p.file + ' failed; lathe fallback stays', err);
+      });
+    });
+  },
+
+  spawnPerson: function (idx, s) {
+    const t = this.peopleTemplates[idx % this.peopleTemplates.length];
+    const root = t.root.clone(true);     // shares geometry and materials
+
+    let headGroup = null;
+    root.traverse(function (n) {
+      if (n.isGroup && Math.abs(n.position.y - t.headGroup.position.y) < 1e-4 &&
+          n !== root) { headGroup = headGroup || n; }
+    });
+
+    /* Place by measured seat contact, not by feet: the bake leaves hips at
+       standing height, so the bum, not the sole, is the datum. */
+    root.position.set(s.x, s.y + CHAIR_PAN_Y - t.seatY, s.z);
+    root.rotation.y = s.yaw;
+    this.root.add(root);
+    return { mesh: root, head: headGroup, baseYaw: s.yaw, isGlb: true };
   },
 
   /* ------------------------------------------------------- head texture
@@ -1729,6 +1831,15 @@ AFRAME.registerComponent('sv-crowd', {
     const clip = this.makeIdleClip();
     for (let i = 0; i < nSkin; i++) {
       const s = seats[seatIdx++];
+
+      if (this.peopleTemplates) {
+        const spawned = this.spawnPerson(i, s);
+        spawned.mixer = null;
+        spawned.person = personFor(seatIdx, this.data.mood);
+        this.skinned.push(spawned);
+        continue;
+      }
+
       const fig = this.makeSkinned(
         this.data.detail,
         this.palette[i % this.palette.length],
@@ -1868,10 +1979,14 @@ AFRAME.registerComponent('sv-crowd', {
   clear: function () {
     const self = this;
     this.skinned.forEach(function (s) {
-      s.mixer.stopAllAction();
+      if (s.mixer) { s.mixer.stopAllAction(); }
       self.root.remove(s.mesh);
-      s.mesh.geometry.dispose();
-      s.mesh.material.dispose();
+      /* Generated people are clones sharing geometry and materials with
+         their template — disposing would break every other clone. */
+      if (!s.isGlb) {
+        s.mesh.geometry.dispose();
+        s.mesh.material.dispose();
+      }
     });
     this.skinned = [];
 
@@ -1923,7 +2038,7 @@ AFRAME.registerComponent('sv-crowd', {
     /* Tier A: every mixer advanced individually. This is the cost that does
        not scale, and the whole reason the other two tiers exist. */
     for (let i = 0; i < this.skinned.length; i++) {
-      this.skinned[i].mixer.update(d);
+      if (this.skinned[i].mixer) { this.skinned[i].mixer.update(d); }
     }
 
     /* Where the speaker's head actually is. Everything aims at this. */

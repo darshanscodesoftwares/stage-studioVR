@@ -57,3 +57,32 @@ licence is per-model and must be checked every time.
 generated at runtime. It is CC0, so the clear-to-deploy position is intact —
 but the position is now something that has to be maintained rather than
 something that is true by construction.
+
+---
+
+## `people/person_0*.glb` — the front-row audience
+
+- **What it is:** six clothed, seated human figures for the front rows,
+  **generated on this machine** rather than downloaded, by MPFB2 (MakeHuman
+  for Blender) driven headless from `tools/generate_humans.py`. Each is a
+  different body — gender, age, build, height, ethnicity are numeric inputs.
+- **Author / vendor:** derived from the MakeHuman base mesh (Data Collection
+  AB, Joel Palmius, Jonas Hauquier) plus the MakeHuman system assets pack
+  (clothes, hair, shoes) by the MakeHuman community.
+- **Licence:** **CC0, established at the source, not by hearsay.** The base
+  mesh states it in its own file header: *"This asset was explicitly released
+  as CC0 in september 2020"*, with the copyright holders named — see
+  `data/3dobjs/base.obj` inside the MPFB package. The clothes and hair come
+  from `makehuman_system_assets_cc0.zip`, every asset listed CC0 on
+  <https://static.makehumancommunity.org/assets/assetpacks/makehuman_system_assets.html>.
+  MPFB itself is GPL-3.0-or-later, which covers the **tool**, not its output.
+- **Source form:** MPFB base mesh (~18.5k polys) + fitted mhclo garments.
+- **Processing applied:** rig, seated pose bake, neck split into a separate
+  head object so the scene can turn it, decimation of the **body only**
+  (0.45; head 0.6), textures to 256px, prune. 16.7k–23.3k triangles and
+  675–883 KB per figure, 4.5 MB for the set of six.
+- **Why clothes are not decimated:** they are fitted meshes, tied vertex by
+  vertex to the body beneath. Decimating them independently pulls the two
+  surfaces apart — jeans shear into shards and forearms punch through the
+  trouser leg. Found by rendering one figure large, not by reading.
+
