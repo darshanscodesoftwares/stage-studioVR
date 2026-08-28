@@ -228,7 +228,7 @@
          sv-hall
          sv-lighting
          sv-truss
-         sv-crowd="preset: 0; mood: 1; triangles: 1800"
+         sv-crowd="preset: 0; mood: 1; detail: 20"
          sv-audio>
 
   <!-- ---- Rig: everything that moves with the speaker --------------------- -->
@@ -1262,6 +1262,75 @@ function personFor (i, mood) {
 const HEAD_YAW_LIMIT = 1.15;           // ~66°, past which a person turns their body
 const HEAD_PITCH_MIN = -0.95, HEAD_PITCH_MAX = 0.55;
 
+/* =========================================================================
+   Body geometry — why the audience stopped looking like traffic cones
+   ------------------------------------------------------------------------
+   The first version was a cylinder tapering from 0.23 at the base to 0.16 at
+   the top: narrow shoulders over a wide skirt, which is the silhouette of a
+   traffic cone and reads as one however good the lighting is.
+
+   A seated person is widest at the shoulders and the hips and narrowest at
+   the waist, and is roughly half as deep as they are wide. That profile plus
+   two arms is the whole difference between a cone and a person, and it costs
+   almost nothing — the crowd measurement left us ~96k triangles of headroom
+   at a full house.
+   ====================================================================== */
+const BODY_H = 0.80;                    // seat pan to shoulders
+
+/* Concatenate geometries into one, so a torso and two arms stay a single
+   draw call. A-Frame's three build does not expose BufferGeometryUtils, and
+   going non-indexed sidesteps index remapping entirely. */
+function mergeGeoms (list) {
+  const geos = list.map(function (g) { return g.index ? g.toNonIndexed() : g; });
+  let total = 0;
+  geos.forEach(function (g) { total += g.attributes.position.count; });
+
+  const pos = new Float32Array(total * 3);
+  const nrm = new Float32Array(total * 3);
+  const uv = new Float32Array(total * 2);
+  let o = 0;
+  geos.forEach(function (g) {
+    pos.set(g.attributes.position.array, o * 3);
+    if (g.attributes.normal) { nrm.set(g.attributes.normal.array, o * 3); }
+    if (g.attributes.uv) { uv.set(g.attributes.uv.array, o * 2); }
+    o += g.attributes.position.count;
+  });
+
+  const out = new THREE.BufferGeometry();
+  out.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  out.setAttribute('normal', new THREE.BufferAttribute(nrm, 3));
+  out.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+  return out;
+}
+
+/* A seated torso with shoulders, plus arms resting forward on the lap. */
+function seatedBody (radial) {
+  const profile = [
+    [0.208, 0.000],   // hips, spread by the seat
+    [0.201, 0.105],
+    [0.170, 0.290],   // waist
+    [0.188, 0.455],
+    [0.214, 0.615],   // shoulders — the widest point, which the cone lacked
+    [0.196, 0.706],
+    [0.104, 0.762],   // neck
+    [0.060, 0.800]
+  ].map(function (p) { return new THREE.Vector2(p[0], p[1]); });
+
+  const torso = new THREE.LatheGeometry(profile, radial);
+  torso.scale(1, 1, 0.66);            // people are wider than they are deep
+
+  const arm = function (side) {
+    const a = new THREE.CapsuleGeometry(0.050, 0.30, 2, Math.max(6, radial >> 1));
+    const m = new THREE.Matrix4();
+    m.makeRotationFromEuler(new THREE.Euler(0.42, 0, side * 0.13));
+    m.setPosition(side * 0.198, 0.415, 0.055);
+    a.applyMatrix4(m);
+    return a;
+  };
+
+  return mergeGeoms([torso, arm(-1), arm(1)]);
+}
+
 function clamp (v, lo, hi) { return v < lo ? lo : (v > hi ? hi : v); }
 function wrapAngle (a) {
   while (a > Math.PI) { a -= Math.PI * 2; }
@@ -1273,7 +1342,7 @@ AFRAME.registerComponent('sv-crowd', {
   schema: {
     preset:   { default: 0 },
     mood:     { default: 1 },          // index into MOOD
-    triangles:{ default: 1800 }        // per skinned figure; dial to taste
+    detail:   { default: 16 }          // radial segments on a front-row body
   },
 
   init: function () {
@@ -1427,13 +1496,9 @@ AFRAME.registerComponent('sv-crowd', {
      A tapered cylinder with a 4-bone spine. Triangle count is driven by the
      schema so we can measure at whatever density a real character would be:
      ~1.8k for a low-poly figure, ~10k for a proper one. */
-  makeSkinned: function (tris, clothing, skinTone) {
-    const radial = 16;
-    const heightSeg = Math.max(4, Math.round(tris / (radial * 2)));
-    const H = 0.80;                    // seated torso: seat pan to shoulders
-
-    const geo = new THREE.CylinderGeometry(0.16, 0.23, H, radial, heightSeg, true);
-    geo.translate(0, H / 2, 0);
+  makeSkinned: function (detail, clothing, skinTone) {
+    const H = BODY_H;
+    const geo = seatedBody(Math.max(8, detail));
 
     /* Skin every vertex to the two nearest bones, blended by height — this
        is what makes the mesh bend at the joints instead of shearing. */
@@ -1441,7 +1506,8 @@ AFRAME.registerComponent('sv-crowd', {
     const pos = geo.attributes.position;
     const si = [], sw = [];
     for (let i = 0; i < pos.count; i++) {
-      const t = Math.max(0, Math.min(BONES - 1.001, pos.getY(i) / segH));
+      const y = clamp(pos.getY(i), 0, H - 0.0001);
+      const t = Math.max(0, Math.min(BONES - 1.001, y / segH));
       const b = Math.floor(t), w = t - b;
       si.push(b, Math.min(b + 1, BONES - 1), 0, 0);
       sw.push(1 - w, w, 0, 0);
@@ -1468,13 +1534,17 @@ AFRAME.registerComponent('sv-crowd', {
        own rotation is driven separately by the attention code. YXZ order so
        yaw is applied before pitch — with the default XYZ a turned head also
        rolls, which reads as a broken neck. */
+    /* 0.092 not 0.115: a real head is about 0.16m across against 0.45m
+       shoulders, and the larger sphere read as bobble-headed. Lifted to
+       1.15 segments so the neck of the lathe profile is actually visible
+       instead of the skull sitting straight on the collarbone. */
     const head = new THREE.Mesh(
-      new THREE.SphereGeometry(0.115, 14, 12),
+      new THREE.SphereGeometry(0.092, 14, 12),
       new THREE.MeshStandardMaterial({
         color: skinTone, roughness: 0.82, map: this.makeHeadTexture()
       })
     );
-    head.position.y = segH * 0.9;
+    head.position.y = segH * 1.15;
     head.rotation.order = 'YXZ';
     bones[BONES - 1].add(head);
 
@@ -1527,13 +1597,21 @@ AFRAME.registerComponent('sv-crowd', {
         c.fill();
       });
     } else {
-      // torso widening to the shoulders
+      /* Shoulders, then a taper to the waist, with the arms sitting
+         slightly proud — the earlier blob had no shoulder line at all, so
+         the back rows read as a row of thumbs. */
       c.beginPath();
-      c.moveTo(w * 0.14, h);
-      c.quadraticCurveTo(w * 0.16, h * 0.18, w * 0.5, h * 0.10);
-      c.quadraticCurveTo(w * 0.84, h * 0.18, w * 0.86, h);
+      c.moveTo(w * 0.12, h);
+      c.lineTo(w * 0.15, h * 0.34);
+      c.quadraticCurveTo(w * 0.19, h * 0.13, w * 0.34, h * 0.09);
+      c.quadraticCurveTo(w * 0.50, h * 0.04, w * 0.66, h * 0.09);
+      c.quadraticCurveTo(w * 0.81, h * 0.13, w * 0.85, h * 0.34);
+      c.lineTo(w * 0.88, h);
       c.closePath();
       c.fill();
+      c.fillStyle = 'rgba(0,0,0,0.16)';       // arm shadow, reads at distance
+      c.fillRect(w * 0.15, h * 0.36, w * 0.07, h * 0.64);
+      c.fillRect(w * 0.78, h * 0.36, w * 0.07, h * 0.64);
     }
 
     const tex = new THREE.CanvasTexture(cv);
@@ -1562,7 +1640,7 @@ AFRAME.registerComponent('sv-crowd', {
     for (let i = 0; i < nSkin; i++) {
       const s = seats[seatIdx++];
       const fig = this.makeSkinned(
-        this.data.triangles,
+        this.data.detail,
         this.palette[i % this.palette.length],
         this.skinTones[(i * 3) % this.skinTones.length]
       );
@@ -1585,12 +1663,11 @@ AFRAME.registerComponent('sv-crowd', {
 
     /* --- tier B: one InstancedMesh for the whole middle --- */
     if (nSolid > 0) {
-      const geo = new THREE.CylinderGeometry(0.16, 0.23, 0.80, 10, 1, false);
-      geo.translate(0, 0.40, 0);
+      const geo = seatedBody(10);        // same silhouette, coarser
       const mat = new THREE.MeshStandardMaterial({ roughness: 0.9 });
       const inst = new THREE.InstancedMesh(geo, mat, nSolid);
 
-      const headGeo = new THREE.SphereGeometry(0.115, 12, 9);
+      const headGeo = new THREE.SphereGeometry(0.092, 12, 9);
       const headMat = new THREE.MeshStandardMaterial({
         roughness: 0.82, map: this.makeHeadTexture()
       });
@@ -1614,7 +1691,7 @@ AFRAME.registerComponent('sv-crowd', {
         inst.setMatrixAt(i, dummy.matrix);
         inst.setColorAt(i, this.palette[(i * 3) % this.palette.length]);
 
-        dummy.position.set(s.x, s.y + SEAT_TOP + 0.80 * hgt + 0.06, s.z);
+        dummy.position.set(s.x, s.y + SEAT_TOP + BODY_H * hgt + 0.035, s.z);
         dummy.scale.set(1, 1, 1);
         dummy.updateMatrix();
         heads.setMatrixAt(i, dummy.matrix);
@@ -1644,8 +1721,8 @@ AFRAME.registerComponent('sv-crowd', {
         }), nCard);
       };
 
-      const bodies = mkCard(this.makeCardTexture('body'), 0.60, 0.62, 0.31);
-      const heads  = mkCard(this.makeCardTexture('head'), 0.23, 0.25, 0.755);
+      const bodies = mkCard(this.makeCardTexture('body'), 0.60, 0.64, 0.32);
+      const heads  = mkCard(this.makeCardTexture('head'), 0.185, 0.205, 0.735);
 
       const dummy = new THREE.Object3D();
       this.cardData = [];
