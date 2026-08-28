@@ -48,21 +48,29 @@ DATA = os.path.expanduser(
 # one figure, but along a row at a shallow angle it reads as a thicket of
 # reaching arms, which is what it looked like in the hall.
 #
-# Hands now rest ON the thighs and the fingers curl. Note the direction of
-# the elbow angle: INCREASING lowerarm01 x RAISES the hand, so the value
-# came down to 16, not up. A relaxed hand is also never flat - MPFB's rest
-# hand is open with the fingers spread, which reads as reaching.
+# The ROLL is the part that took three attempts. Swinging the upper arm
+# down with z alone leaves the forearm unrolled, so the palms end up facing
+# UP with the fingers spread - a whole row of people appearing to meditate,
+# or to offer you something. The y term (-70 left, +70 right) rotates the
+# arm about its own length so the palms turn inward and down against the
+# thigh, which is what a seated person's hands actually do.
+#
+# Also note the elbow direction, which is the opposite of the intuition:
+# INCREASING lowerarm01 x RAISES the hand. A first attempt at 72 put the
+# hands on the chest.
+#
+# Fingers curl too. MPFB's rest hand is open with the fingers spread, which
+# reads as reaching for something rather than resting.
 POSE = {
     "upperleg01.L": (-88, 0, -6), "upperleg01.R": (-88, 0, 6),
     "lowerleg01.L": (86, 0, 0),   "lowerleg01.R": (86, 0, 0),
-    "upperarm01.L": (0, 0, -86),  "upperarm01.R": (0, 0, 86),
-    "lowerarm01.L": (16, 0, 0),   "lowerarm01.R": (16, 0, 0),
-    "wrist.L": (-12, 0, 0),       "wrist.R": (-12, 0, 0),
+    "upperarm01.L": (4, -70, -84), "upperarm01.R": (4, 70, 84),
+    "lowerarm01.L": (24, 0, 0),    "lowerarm01.R": (24, 0, 0),
     "spine03": (6, 0, 0), "spine02": (4, 0, 0),
 }
 
 # A resting hand curls. Applied to every finger joint on both hands.
-FINGER_CURL = {"1": 14, "2": 26, "3": 28, "4": 26, "5": 22}
+FINGER_CURL = {"1": 10, "2": 30, "3": 32, "4": 30, "5": 26}
 
 MALE_SUITS = ["male_casualsuit01", "male_casualsuit02", "male_casualsuit03",
               "male_casualsuit04", "male_casualsuit05", "male_casualsuit06"]

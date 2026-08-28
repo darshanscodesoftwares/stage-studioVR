@@ -81,6 +81,12 @@ something that is true by construction.
   head object so the scene can turn it, decimation of the **body only**
   (0.45; head 0.6), textures to 256px, prune. 16.7k–23.3k triangles and
   675–883 KB per figure, 4.5 MB for the set of six.
+- **The seated pose took four rendered attempts**, and the deciding term was
+  the arm ROLL. Swinging the upper arm down without rolling it leaves the
+  palms facing up with the fingers spread - a whole row appearing to
+  meditate. The y term on `upperarm01` turns the arm about its own length so
+  the palms come down against the thigh. Note also that INCREASING the elbow
+  angle RAISES the hand, which is the opposite of the intuition.
 - **Why the skeleton ships:** an earlier version baked the pose flat and cut
   the head off as a separate object so it could be rotated. That left an open
   hole at the neck - visible as white shrapnel - and swung a rigid skull off
