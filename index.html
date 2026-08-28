@@ -1237,12 +1237,12 @@ const MAX_SOLID   = 132;               // tier B cap
    leaves the hips at standing height — the figure "sits in the air", and
    placing it by its feet would hang it half a metre above the chair. */
 const PEOPLE = [
-  { file: 'person_00', seatY: 0.778 },
-  { file: 'person_01', seatY: 0.866 },
-  { file: 'person_02', seatY: 0.753 },
-  { file: 'person_03', seatY: 0.812 },
-  { file: 'person_04', seatY: 0.756 },
-  { file: 'person_05', seatY: 0.898 }
+  { file: 'person_00', seatY: 0.778, soleY: 0.430 },
+  { file: 'person_01', seatY: 0.866, soleY: 0.431 },
+  { file: 'person_02', seatY: 0.753, soleY: 0.364 },
+  { file: 'person_03', seatY: 0.812, soleY: 0.269 },
+  { file: 'person_04', seatY: 0.756, soleY: 0.358 },
+  { file: 'person_05', seatY: 0.898, soleY: 0.395 }
 ];
 const CHAIR_PAN_Y = 0.44;              // chair.glb pan height
 
@@ -1621,7 +1621,8 @@ AFRAME.registerComponent('sv-crowd', {
             b.svRight = new THREE.Vector3().crossVectors(b.svUp, face).normalize();
           });
 
-          pool[idx] = { root: root, bones: bones, seatY: p.seatY };
+          pool[idx] = { root: root, bones: bones,
+                        seatY: p.seatY, soleY: p.soleY };
 
           remaining--;
           if (remaining === 0) {
@@ -1646,10 +1647,20 @@ AFRAME.registerComponent('sv-crowd', {
     const p = this.peoplePool[i % this.peoplePool.length];
     if (!p) { return null; }
     p.root.visible = true;
-    /* Place by measured seat contact, not by feet: the pose bake leaves the
-       hips at standing height, so the bum is the datum. The +PI is because
-       the generated figures face +z where the scene's convention is -z. */
-    p.root.position.set(s.x, s.y + CHAIR_PAN_Y - p.seatY, s.z);
+    /* Two constraints, and a fixed pose cannot satisfy both: the bum should
+       sit on the chair pan AND the feet should reach the floor. Leg length
+       varies with every body, so the gap between seat and sole ranges from
+       0.35m to 0.54m against a 0.44m chair. Placing purely by the seat left
+       feet floating 9cm in the air or buried 10cm in the carpet.
+
+       So the error is SPLIT. Each figure sits half its discrepancy low and
+       lands its feet half a discrepancy high, which caps both at ~5cm — and
+       the bum half is largely hidden by the chair and the thighs, while the
+       feet half is the visible one. The +PI is because the generated
+       figures face +z where the scene's convention is -z. */
+    const bySeat = s.y + CHAIR_PAN_Y - p.seatY;   // bum exact, feet may float
+    const byFeet = s.y - p.soleY;                 // feet exact, bum may sink
+    p.root.position.set(s.x, (bySeat + byFeet) / 2, s.z);
     p.root.rotation.y = s.yaw + Math.PI;
     return { mesh: p.root, bones: p.bones, baseYaw: s.yaw,
              isGlb: true, pooled: true };

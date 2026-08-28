@@ -121,6 +121,114 @@ def clothe(HumanService, mesh, i, male):
                                          interpolate_weights=True)
 
 
+SEAT_TO_FLOOR = 0.44          # chair pan height; must match CHAIR_PAN_Y in index.html
+
+
+def _lowest_z(objs):
+    """Lowest world Z across the evaluated (deformed) meshes."""
+    dg = bpy.context.evaluated_depsgraph_get()
+    lo = 1e9
+    for o in objs:
+        ev = o.evaluated_get(dg)
+        me = ev.to_mesh()
+        mw = o.matrix_world
+        for v in me.vertices:
+            z = (mw @ v.co).z
+            if z < lo:
+                lo = z
+        ev.to_mesh_clear()
+    return lo
+
+
+def _seat_contact_z(arm, body):
+    """Height of the buttock: the lowest body vertex under the hip joint.
+
+    Two earlier versions failed. A fixed vertex window reported the seat
+    20cm high on three of six bodies, because the box that catches the
+    buttock on one pelvis catches the crotch on another. Replacing it with
+    "hip bone minus a constant" was worse in a subtler way - it agreed with
+    itself but disagreed with the measurement the SCENE uses to place the
+    figure, by up to 10cm, so the solver converged on the wrong answer.
+
+    This anchors the search to the hip joint, so the window follows the
+    body, and then takes the lowest actual vertex - the same quantity the
+    placement measurement takes.
+    """
+    hip = arm.pose.bones.get("upperleg01.L")
+    if not hip:
+        return None
+    hw = (arm.matrix_world @ hip.matrix).to_translation()
+
+    dg = bpy.context.evaluated_depsgraph_get()
+    ev = body.evaluated_get(dg)
+    me = ev.to_mesh()
+    mw = body.matrix_world
+    lo = 1e9
+    for v in me.vertices:
+        w = mw @ v.co
+        if abs(w.x) < 0.12 and abs(w.y - hw.y) < 0.18 and w.z < hw.z + 0.05:
+            if w.z < lo:
+                lo = w.z
+    ev.to_mesh_clear()
+    return None if lo > 1e8 else lo
+
+
+def fit_feet_to_floor(arm, body, others):
+    """Adjust the shin angle until the soles sit exactly SEAT_TO_FLOOR below
+    the seat contact, so the figure's feet meet the floor when it is placed
+    on a chair.
+
+    Leg length varies with every body, and the figure is positioned in the
+    scene by its seat contact - so with one fixed shin angle the soles land
+    wherever they happen to. Measured across six figures that was anything
+    from 10cm buried in the carpet to 9cm hovering above it. A real person
+    just moves their feet; this does the same thing.
+    """
+    bpy.ops.object.select_all(action="DESELECT")
+    arm.select_set(True)
+    bpy.context.view_layer.objects.active = arm
+    bpy.ops.object.mode_set(mode="POSE")
+
+    seat = _seat_contact_z(arm, body)
+    target = seat - SEAT_TO_FLOOR
+    # `others` is the shoe meshes; fall back to the body if a figure has none
+    meshes = list(others) if others else [body]
+
+    def try_deg(deg):
+        for side in ("L", "R"):
+            pb = arm.pose.bones.get("lowerleg01.%s" % side)
+            if pb:
+                pb.rotation_mode = "XYZ"
+                pb.rotation_euler = (rad(deg), 0, 0)
+        bpy.context.view_layer.update()
+        sole = _lowest_z(meshes)
+        return abs(sole - target), deg, sole
+
+    # Coarse then fine. Evaluating the depsgraph over four skinned meshes is
+    # the expensive part, so 11 + 7 samples replaces 43 and lands in the same
+    # place - the error curve has one minimum.
+    best = None
+    for deg in range(40, 125, 8):
+        r = try_deg(deg)
+        if best is None or r[0] < best[0]:
+            best = r
+    centre = best[1]
+    for deg in range(max(38, centre - 6), min(126, centre + 7), 2):
+        r = try_deg(deg)
+        if r[0] < best[0]:
+            best = r
+
+    for side in ("L", "R"):
+        pb = arm.pose.bones.get("lowerleg01.%s" % side)
+        if pb:
+            pb.rotation_euler = (rad(best[1]), 0, 0)
+    bpy.context.view_layer.update()
+    bpy.ops.object.mode_set(mode="OBJECT")
+    print("GEN   shin %d deg -> sole %.3f (target %.3f, err %.3fm)"
+          % (best[1], best[2], target, best[0]))
+    return best[1]
+
+
 def bake_pose(arm):
     """Make the seated pose the REST pose, keeping the armature live.
 
@@ -205,6 +313,34 @@ def generate(out_dir, count):
         arm = [o for o in bpy.data.objects if o.type == "ARMATURE"][0]
 
         clothe(HumanService, mesh, i, macros["gender"] > 0.5)
+
+        # set the pose, fit the feet to the floor, THEN bake
+        bpy.ops.object.select_all(action="DESELECT")
+        arm.select_set(True)
+        bpy.context.view_layer.objects.active = arm
+        bpy.ops.object.mode_set(mode="POSE")
+        for name, (x, y, z) in POSE.items():
+            pb = arm.pose.bones.get(name)
+            if pb:
+                pb.rotation_mode = "XYZ"
+                pb.rotation_euler = (rad(x), rad(y), rad(z))
+        for side in ("L", "R"):
+            for digit, deg in FINGER_CURL.items():
+                for joint in ("1", "2", "3"):
+                    pb = arm.pose.bones.get("finger%s-%s.%s" % (digit, joint, side))
+                    if pb:
+                        pb.rotation_mode = "XYZ"
+                        pb.rotation_euler = (rad(deg), 0, 0)
+        bpy.ops.object.mode_set(mode="OBJECT")
+
+        # Measure the SOLE from the shoes alone. Scanning every mesh made the
+        # lowest vertex a hair tip for the long-haired figures - hair hangs
+        # below the seat when seated - and the solver then chased a target
+        # the shins could not move, pinning itself at the search limits.
+        soles = [o for o in bpy.data.objects
+                 if o.type == "MESH" and any(s in o.name for s in SHOES)]
+        fit_feet_to_floor(arm, mesh, soles)
+
         bake_pose(arm)
 
         # skin material for the body mesh (clothes keep their own)
