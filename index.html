@@ -115,10 +115,11 @@
   <div class="row"><button id="btnLights">House lights</button>
                    <span class="stat" id="lightState">up</span></div>
   <div class="row"><button id="btnCrowd">Audience +</button>
+                   <button id="btnMood">Mood</button>
                    <span class="stat" id="crowdState">0</span></div>
   <div class="row"><span class="stat" id="devStats">—</span></div>
   <div class="row"><span class="stat"><kbd>L</kbd> lights &nbsp; <kbd>C</kbd> audience &nbsp;
-                   <kbd>R</kbd> reset pose</span></div>
+                   <kbd>V</kbd> mood &nbsp; <kbd>R</kbd> reset pose</span></div>
 </div>
 
 <!-- ========================================================================
@@ -138,7 +139,7 @@
          sv-hall
          sv-lighting
          sv-truss
-         sv-crowd="preset: 0; triangles: 1800">
+         sv-crowd="preset: 0; mood: 1; triangles: 1800">
 
   <!-- ---- Rig: everything that moves with the speaker --------------------- -->
   <!-- Start behind the lectern (which sits at z = -7.6), facing +z down the
@@ -1119,9 +1120,59 @@ const MAX_SKINNED = 8;                 // tier A cap — the eye-contact rows
 const MAX_SOLID   = 40;                // tier B cap
 const SEAT_TOP    = 0.50;              // seat pan height — where a seated body starts
 
+/* =========================================================================
+   Attention — the difficulty dial that is actually the product
+   ------------------------------------------------------------------------
+   The brief: "audience heads turning toward the speaker is the single most
+   anxiety-producing behaviour available, and it is nearly free." The *mix*
+   of attention is the difficulty, not the headcount — thirty engaged people
+   are harder than a hundred looking at their phones.
+
+   `look` is the probability that a person's head tracks you at all, which
+   is the brief's nobody-looks / some-look / everybody-looks dial.
+   ====================================================================== */
+const MOOD = [
+  { name: 'friendly',   engaged: 0.90, distracted: 0.02, look: 0.95 },
+  { name: 'polite',     engaged: 0.55, distracted: 0.12, look: 0.60 },
+  { name: 'drifting',   engaged: 0.25, distracted: 0.45, look: 0.25 },
+  { name: 'every eye',  engaged: 1.00, distracted: 0.00, look: 1.00 }
+];
+
+/* Stable per-person pseudo-randomness. Deterministic so a given seat keeps
+   its personality across a preset change instead of reshuffling. */
+function hash01 (i, salt) {
+  const x = Math.sin(i * 127.1 + salt * 311.7) * 43758.5453;
+  return x - Math.floor(x);
+}
+
+/* ENGAGED 0 · NEUTRAL 1 · DISTRACTED 2 */
+function personFor (i, mood) {
+  const m = MOOD[mood];
+  const r = hash01(i, 1);
+  const state = r < m.engaged ? 0 : (r < 1 - m.distracted ? 1 : 2);
+  return {
+    state: state,
+    /* Distracted people never look at you; that is what distracted means. */
+    looks: state !== 2 && hash01(i, 2) < m.look,
+    fidget: hash01(i, 3),
+    glanceAt: 0
+  };
+}
+
+const HEAD_YAW_LIMIT = 1.15;           // ~66°, past which a person turns their body
+const HEAD_PITCH_MIN = -0.95, HEAD_PITCH_MAX = 0.55;
+
+function clamp (v, lo, hi) { return v < lo ? lo : (v > hi ? hi : v); }
+function wrapAngle (a) {
+  while (a > Math.PI) { a -= Math.PI * 2; }
+  while (a < -Math.PI) { a += Math.PI * 2; }
+  return a;
+}
+
 AFRAME.registerComponent('sv-crowd', {
   schema: {
     preset:   { default: 0 },
+    mood:     { default: 1 },          // index into MOOD
     triangles:{ default: 1800 }        // per skinned figure; dial to taste
   },
 
@@ -1150,7 +1201,8 @@ AFRAME.registerComponent('sv-crowd', {
   },
 
   update: function (old) {
-    if (old && old.preset !== undefined && old.preset !== this.data.preset) {
+    if (!old) { return; }
+    if (old.preset !== this.data.preset || old.mood !== this.data.mood) {
       this.apply(this.data.preset);
     }
   },
@@ -1223,6 +1275,54 @@ AFRAME.registerComponent('sv-crowd', {
     });
   },
 
+  /* ------------------------------------------------------- head texture
+     A turning head only reads as *looking at you* if it has a face on it.
+     A bare sphere rotates invisibly, which would make the whole eye-contact
+     feature a no-op that costs CPU.
+
+     THREE.SphereGeometry maps u=0.25 to +z and u=0.75 to -z, and the figures
+     face -z, so the eyes go at u=0.75. Eyes are near-black, so multiplying by
+     any per-instance skin tone leaves them dark. */
+  makeHeadTexture: function () {
+    if (this._headTex) { return this._headTex; }
+    const w = 256, h = 128;
+    const cv = document.createElement('canvas');
+    cv.width = w; cv.height = h;
+    const c = cv.getContext('2d');
+
+    c.fillStyle = '#ffffff'; c.fillRect(0, 0, w, h);
+
+    // hair: a cap over the crown, wrapping the whole way round
+    const grad = c.createLinearGradient(0, 0, 0, h * 0.42);
+    grad.addColorStop(0.0, '#4a4038');
+    grad.addColorStop(0.75, '#4a4038');
+    grad.addColorStop(1.0, 'rgba(74,64,56,0)');
+    c.fillStyle = grad;
+    c.fillRect(0, 0, w, h * 0.42);
+
+    const faceU = 0.75;
+    const eye = function (dx) {
+      c.fillStyle = '#15151a';
+      c.beginPath();
+      c.ellipse(w * (faceU + dx), h * 0.46, w * 0.023, h * 0.038, 0, 0, 6.284);
+      c.fill();
+    };
+    eye(-0.045); eye(0.045);
+
+    // brow shadow and a suggestion of a mouth — enough to read at 3m
+    c.fillStyle = 'rgba(60,45,35,0.30)';
+    c.fillRect(w * (faceU - 0.075), h * 0.395, w * 0.15, h * 0.022);
+    c.fillStyle = 'rgba(90,55,50,0.40)';
+    c.beginPath();
+    c.ellipse(w * faceU, h * 0.60, w * 0.030, h * 0.012, 0, 0, 6.284);
+    c.fill();
+
+    const tex = new THREE.CanvasTexture(cv);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    this._headTex = tex;
+    return tex;
+  },
+
   /* ------------------------------------------------- a real skinned figure
      A tapered cylinder with a 4-bone spine. Triangle count is driven by the
      schema so we can measure at whatever density a real character would be:
@@ -1264,15 +1364,21 @@ AFRAME.registerComponent('sv-crowd', {
     mesh.bind(new THREE.Skeleton(bones));
     mesh.frustumCulled = true;
 
-    // head, parented to the top bone so it moves with the sway
+    /* Head is parented to the top bone so it rides the idle sway, but its
+       own rotation is driven separately by the attention code. YXZ order so
+       yaw is applied before pitch — with the default XYZ a turned head also
+       rolls, which reads as a broken neck. */
     const head = new THREE.Mesh(
-      new THREE.SphereGeometry(0.115, 12, 10),
-      new THREE.MeshStandardMaterial({ color: skinTone, roughness: 0.82 })
+      new THREE.SphereGeometry(0.115, 14, 12),
+      new THREE.MeshStandardMaterial({
+        color: skinTone, roughness: 0.82, map: this.makeHeadTexture()
+      })
     );
     head.position.y = segH * 0.9;
+    head.rotation.order = 'YXZ';
     bones[BONES - 1].add(head);
 
-    return { mesh: mesh, bones: bones };
+    return { mesh: mesh, bones: bones, head: head };
   },
 
   /* An idle clip, driven by a real AnimationMixer so the measurement
@@ -1313,6 +1419,13 @@ AFRAME.registerComponent('sv-crowd', {
       c.beginPath();
       c.ellipse(w * 0.5, h * 0.5, w * 0.34, h * 0.42, 0, 0, 6.284);
       c.fill();
+      // eyes, so a card turned toward you reads as watching you
+      c.fillStyle = '#20202a';
+      [-0.11, 0.11].forEach(function (dx) {
+        c.beginPath();
+        c.ellipse(w * (0.5 + dx), h * 0.47, w * 0.045, h * 0.055, 0, 0, 6.284);
+        c.fill();
+      });
     } else {
       // torso widening to the shoulders
       c.beginPath();
@@ -1364,7 +1477,10 @@ AFRAME.registerComponent('sv-crowd', {
          sync destroys the illusion instantly — see the brief. */
       action.time = (i * 0.9137) % clip.duration;
       action.play();
-      this.skinned.push({ mixer: mixer, mesh: fig.mesh });
+      this.skinned.push({
+        mixer: mixer, mesh: fig.mesh, head: fig.head,
+        person: personFor(seatIdx, this.data.mood), baseYaw: s.yaw
+      });
     }
 
     /* --- tier B: one InstancedMesh for the whole middle --- */
@@ -1374,14 +1490,23 @@ AFRAME.registerComponent('sv-crowd', {
       const mat = new THREE.MeshStandardMaterial({ roughness: 0.9 });
       const inst = new THREE.InstancedMesh(geo, mat, nSolid);
 
-      const headGeo = new THREE.SphereGeometry(0.115, 8, 6);
-      const headMat = new THREE.MeshStandardMaterial({ roughness: 0.82 });
+      const headGeo = new THREE.SphereGeometry(0.115, 12, 9);
+      const headMat = new THREE.MeshStandardMaterial({
+        roughness: 0.82, map: this.makeHeadTexture()
+      });
       const heads = new THREE.InstancedMesh(headGeo, headMat, nSolid);
 
       const dummy = new THREE.Object3D();
+      this.solidData = [];
       for (let i = 0; i < nSolid; i++) {
+        const sIdx = seatIdx;
         const s = seats[seatIdx++];
         const hgt = 0.9 + ((i * 7) % 5) * 0.05;
+        this.solidData.push({
+          x: s.x, y: s.y, z: s.z, baseYaw: s.yaw,
+          headY: s.y + SEAT_TOP + 0.80 * hgt + 0.06,
+          person: personFor(sIdx, this.data.mood)
+        });
         dummy.position.set(s.x, s.y + SEAT_TOP, s.z);
         dummy.rotation.set(0, s.yaw + ((i * 13) % 7 - 3) * 0.03, 0);
         dummy.scale.set(1, hgt, 1);
@@ -1438,7 +1563,10 @@ AFRAME.registerComponent('sv-crowd', {
            matters more than fidelity — see the brief. */
         bodies.setColorAt(i, this.palette[(i * 7) % this.palette.length]);
         heads.setColorAt(i, this.skinTones[(i * 3) % this.skinTones.length]);
-        this.cardData.push({ x: s.x, y: s.y, z: s.z, h: hgt });
+        this.cardData.push({
+          x: s.x, y: s.y, z: s.z, h: hgt,
+          baseYaw: s.yaw, person: personFor(seatIdx - 1, this.data.mood)
+        });
       }
       [bodies, heads].forEach(function (m) {
         m.instanceMatrix.needsUpdate = true;
@@ -1454,12 +1582,20 @@ AFRAME.registerComponent('sv-crowd', {
   },
 
   report: function (a, b, c) {
-    const line = 'crowd: ' + (a + b + c) + ' (' + a + ' skinned / ' +
-                 b + ' instanced / ' + c + ' cards)';
+    const total = a + b + c;
+    let watching = 0;
+    this.skinned.forEach(function (s) { if (s.person.looks) { watching++; } });
+    (this.solidData || []).forEach(function (p) { if (p.person.looks) { watching++; } });
+    (this.cardData || []).forEach(function (p) { if (p.person.looks) { watching++; } });
+
+    const mood = MOOD[this.data.mood].name;
+    const line = 'crowd: ' + total + ' (' + a + ' skinned / ' + b + ' instanced / ' +
+                 c + ' cards) · ' + mood + ' · ' + watching + ' watching you';
     console.log('[sv] ' + line);
     this.summary = line;
+    this.watching = watching;
     const el = document.getElementById('crowdState');
-    if (el) { el.textContent = (a + b + c) + ' — ' + a + 'sk/' + b + 'in/' + c + 'bb'; }
+    if (el) { el.textContent = total + ' · ' + mood + ' · ' + watching + ' watching'; }
   },
 
   clear: function () {
@@ -1483,6 +1619,35 @@ AFRAME.registerComponent('sv-crowd', {
     this.solid = null;
     this.cards = null;
     this.cardData = null;
+    this.solidData = null;
+  },
+
+  /* ------------------------------------------------------- where to look
+     Returns the head's desired yaw and pitch IN WORLD TERMS for one person.
+     Yaw is clamped relative to the body, because a neck that swivels 180
+     degrees reads as a horror film rather than as an audience. */
+  aimFor: function (person, i, hx, hy, hz, baseYaw, sp, t) {
+    let yaw, pitch;
+
+    if (person.looks) {
+      const dx = sp.x - hx, dy = sp.y - hy, dz = sp.z - hz;
+      yaw = Math.atan2(-dx, -dz);
+      pitch = Math.atan2(dy, Math.hypot(dx, dz));
+    } else if (person.state === 2) {
+      /* Distracted: phone in the lap, or the neighbour, or the far wall.
+         Re-rolled every few seconds so the room keeps shifting. */
+      const slot = Math.floor(t / 4200 + person.fidget * 7) % 3;
+      if (slot === 0)      { yaw = baseYaw + (person.fidget - 0.5) * 0.3; pitch = -0.82; }
+      else if (slot === 1) { yaw = baseYaw + (person.fidget < 0.5 ? -0.95 : 0.95); pitch = 0.02; }
+      else                 { yaw = baseYaw + (person.fidget - 0.5) * 1.5; pitch = 0.10; }
+    } else {
+      // neutral: facing the stage, not quite at you, with a slow drift
+      yaw = baseYaw + Math.sin(t * 0.00035 + person.fidget * 6.3) * 0.16;
+      pitch = 0.04;
+    }
+
+    const rel = clamp(wrapAngle(yaw - baseYaw), -HEAD_YAW_LIMIT, HEAD_YAW_LIMIT);
+    return { yaw: baseYaw + rel, pitch: clamp(pitch, HEAD_PITCH_MIN, HEAD_PITCH_MAX) };
   },
 
   tick: function (t, dt) {
@@ -1494,29 +1659,87 @@ AFRAME.registerComponent('sv-crowd', {
       this.skinned[i].mixer.update(d);
     }
 
-    /* Tier C: the audience all face the stage anyway, so the cards only need
-       re-aiming when the speaker moves off-axis — 5Hz is plenty, and it keeps
-       a 250-instance rewrite off the critical path. */
+    /* Where the speaker's head actually is. Everything aims at this. */
+    const cam = this.el.sceneEl.camera;
+    if (!cam) { return; }
+    if (!this._sp) { this._sp = new THREE.Vector3(); }
+    const sp = this._sp;
+    cam.getWorldPosition(sp);
+
+    /* ---- Tier A heads: every frame, only eight of them, and these are the
+       ones eye contact actually lands on. Damped, because a head that snaps
+       to target looks mechanical. */
+    if (!this._hp) {
+      this._hp = new THREE.Vector3();
+      this._qw = new THREE.Quaternion();
+      this._qp = new THREE.Quaternion();
+      this._ql = new THREE.Quaternion();
+      this._eu = new THREE.Euler(0, 0, 0, 'YXZ');
+    }
+    const k = 1 - Math.exp(-5.0 * d);
+    for (let i = 0; i < this.skinned.length; i++) {
+      const s = this.skinned[i];
+      if (!s.head) { continue; }
+      s.head.getWorldPosition(this._hp);
+      const a = this.aimFor(s.person, i, this._hp.x, this._hp.y, this._hp.z,
+                            s.baseYaw, sp, t);
+
+      /* The head hangs off a four-bone chain that the idle clip is also
+         rotating, so subtracting the body's yaw by hand leaves the head
+         pointing wide by however much the spine happens to be leaning.
+         Build the desired WORLD orientation, then convert it into the head's
+         parent frame — which cancels the entire chain exactly, whatever the
+         animation is doing to it. */
+      this._eu.set(a.pitch, a.yaw, 0);
+      this._qw.setFromEuler(this._eu);
+      s.head.parent.getWorldQuaternion(this._qp);
+      this._ql.copy(this._qp).invert().multiply(this._qw);
+      s.head.quaternion.slerp(this._ql, k);
+    }
+
+    /* ---- Tier B heads: 40 instances rewritten at 6Hz. Cheap, and nobody
+       can tell the difference at that distance. */
+    if (this.solid && this.solidData && t > (this._nextSolid || 0)) {
+      this._nextSolid = t + 160;
+      const heads = this.solid[1];
+      const dummy = new THREE.Object3D();
+      dummy.rotation.order = 'YXZ';
+      for (let i = 0; i < this.solidData.length; i++) {
+        const p = this.solidData[i];
+        const a = this.aimFor(p.person, i, p.x, p.headY, p.z, p.baseYaw, sp, t);
+        dummy.position.set(p.x, p.headY, p.z);
+        dummy.rotation.set(a.pitch, a.yaw, 0);
+        dummy.scale.set(1, 1, 1);
+        dummy.updateMatrix();
+        heads.setMatrixAt(i, dummy.matrix);
+      }
+      heads.instanceMatrix.needsUpdate = true;
+    }
+
+    /* Tier C: back rows, 5Hz, and only those actually watching turn toward
+       the speaker — the rest keep the yaw of their seat. At this distance
+       that difference is all the attention signal a billboard can carry, and
+       it is enough: what you register from the stage is how much of the room
+       is angled at you. */
     if (this.cards && t > this.nextFace) {
       this.nextFace = t + 200;
-      const cam = this.el.sceneEl.camera;
-      if (cam) {
-        const p = new THREE.Vector3();
-        cam.getWorldPosition(p);
-        const dummy = new THREE.Object3D();
-        const cards = this.cards;
-        for (let i = 0; i < this.cardData.length; i++) {
-          const c = this.cardData[i];
-          dummy.position.set(c.x, c.y + SEAT_TOP, c.z);
-          dummy.rotation.set(0, Math.atan2(p.x - c.x, p.z - c.z), 0);
-          dummy.scale.set(1, c.h, 1);
-          dummy.updateMatrix();
-          cards[0].setMatrixAt(i, dummy.matrix);
-          cards[1].setMatrixAt(i, dummy.matrix);
-        }
-        cards[0].instanceMatrix.needsUpdate = true;
-        cards[1].instanceMatrix.needsUpdate = true;
+      const dummy = new THREE.Object3D();
+      const cards = this.cards;
+      for (let i = 0; i < this.cardData.length; i++) {
+        const c = this.cardData[i];
+        /* -z is the card's front, so this is atan2(-dx, -dz). */
+        const toSpeaker = Math.atan2(c.x - sp.x, c.z - sp.z);
+        const rel = clamp(wrapAngle(toSpeaker - c.baseYaw),
+                          -HEAD_YAW_LIMIT, HEAD_YAW_LIMIT);
+        dummy.position.set(c.x, c.y + SEAT_TOP, c.z);
+        dummy.rotation.set(0, c.person.looks ? c.baseYaw + rel : c.baseYaw, 0);
+        dummy.scale.set(1, c.h, 1);
+        dummy.updateMatrix();
+        cards[0].setMatrixAt(i, dummy.matrix);
+        cards[1].setMatrixAt(i, dummy.matrix);
       }
+      cards[0].instanceMatrix.needsUpdate = true;
+      cards[1].instanceMatrix.needsUpdate = true;
     }
   }
 });
@@ -1951,6 +2174,11 @@ AFRAME.registerComponent('sv-snapturn', {
       const stepCrowd = function () { window.svStepCrowd(); };
       if (handR) { handR.addEventListener('bbuttondown', stepCrowd); }
       if (handL) { handL.addEventListener('ybuttondown', stepCrowd); }
+
+      // thumbstick click cycles the audience mood
+      const stepMood = function () { window.svStepMood(); };
+      if (handR) { handR.addEventListener('thumbstickdown', stepMood); }
+      if (handL) { handL.addEventListener('thumbstickdown', stepMood); }
     };
 
     if (this.el.sceneEl.hasLoaded) { bind(); }
@@ -2060,12 +2288,23 @@ AFRAME.registerComponent('sv-snapturn', {
   };
   document.getElementById('btnCrowd').addEventListener('click', window.svStepCrowd);
 
+  /* Cycle the audience mood — how many are engaged, and how many of those
+     actually look at you. This is the difficulty dial the brief cares about
+     more than headcount. */
+  window.svStepMood = function () {
+    const c = scene.components['sv-crowd'];
+    if (!c) { return; }
+    scene.setAttribute('sv-crowd', 'mood', (c.data.mood + 1) % MOOD.length);
+  };
+  document.getElementById('btnMood').addEventListener('click', window.svStepMood);
+
   window.addEventListener('keydown', function (e) {
     if (e.code === 'KeyL') {
       const l = scene.components['sv-lighting'];
       if (l) { l.toggle(); }
     }
     if (e.code === 'KeyC') { window.svStepCrowd(); }
+    if (e.code === 'KeyV') { window.svStepMood(); }
   });
 
   scene.addEventListener('loaded', function () {
