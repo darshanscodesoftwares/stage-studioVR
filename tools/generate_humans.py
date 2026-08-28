@@ -39,17 +39,30 @@ DATA = os.path.expanduser(
     "~/.config/blender/4.5/extensions/.user/user_default/mpfb/data")
 
 # hands folded in the lap - candidate B of the rendered arm sweep
-# Hands folded in the lap, thighs horizontal, shins vertical - candidate B
-# of the rendered arm sweep. Splitting the leg bend across upperleg01+02
-# was tried to spare the garment fit and made it worse: the silhouette
-# stopped reading as seated and became a splay. One joint, full angle.
+# Thighs horizontal, shins vertical, hands resting ON the thighs.
+#
+# Two earlier attempts, both rejected by rendering. Splitting the leg bend
+# across upperleg01+02 to spare the garment fit stopped the silhouette
+# reading as seated and became a splay. And a 45-degree elbow left the
+# hands hovering in front of the belly with the fingers splayed - fine on
+# one figure, but along a row at a shallow angle it reads as a thicket of
+# reaching arms, which is what it looked like in the hall.
+#
+# Hands now rest ON the thighs and the fingers curl. Note the direction of
+# the elbow angle: INCREASING lowerarm01 x RAISES the hand, so the value
+# came down to 16, not up. A relaxed hand is also never flat - MPFB's rest
+# hand is open with the fingers spread, which reads as reaching.
 POSE = {
     "upperleg01.L": (-88, 0, -6), "upperleg01.R": (-88, 0, 6),
     "lowerleg01.L": (86, 0, 0),   "lowerleg01.R": (86, 0, 0),
-    "upperarm01.L": (0, 0, -70),  "upperarm01.R": (0, 0, 70),
-    "lowerarm01.L": (45, 0, 0),   "lowerarm01.R": (45, 0, 0),
+    "upperarm01.L": (0, 0, -86),  "upperarm01.R": (0, 0, 86),
+    "lowerarm01.L": (16, 0, 0),   "lowerarm01.R": (16, 0, 0),
+    "wrist.L": (-12, 0, 0),       "wrist.R": (-12, 0, 0),
     "spine03": (6, 0, 0), "spine02": (4, 0, 0),
 }
+
+# A resting hand curls. Applied to every finger joint on both hands.
+FINGER_CURL = {"1": 14, "2": 26, "3": 28, "4": 26, "5": 22}
 
 MALE_SUITS = ["male_casualsuit01", "male_casualsuit02", "male_casualsuit03",
               "male_casualsuit04", "male_casualsuit05", "male_casualsuit06"]
@@ -117,6 +130,14 @@ def bake_pose(arm):
         if pb:
             pb.rotation_mode = "XYZ"
             pb.rotation_euler = (rad(x), rad(y), rad(z))
+
+    for side in ("L", "R"):
+        for digit, deg in FINGER_CURL.items():
+            for joint in ("1", "2", "3"):
+                pb = arm.pose.bones.get("finger%s-%s.%s" % (digit, joint, side))
+                if pb:
+                    pb.rotation_mode = "XYZ"
+                    pb.rotation_euler = (rad(deg), 0, 0)
     bpy.ops.object.mode_set(mode="OBJECT")
 
     for o in [o for o in bpy.data.objects if o.type == "MESH"]:
