@@ -1377,17 +1377,72 @@ AFRAME.registerComponent('sv-crowd', {
   },
 
   /* ---------------------------------------------------------------- chairs
-     Four InstancedMeshes cover the whole auditorium regardless of seat count:
-     upholstered pan, upholstered back, side standards, armrests. Chairs never
-     move and never deform, so this stays four draw calls at any capacity.
+     The first downloaded asset in the project: School Chair 01 from Poly
+     Haven, CC0, decimated 5,072 → 354 triangles (see assets/CREDITS.md).
+     Loaded once, then instanced across every seat — one draw call for the
+     whole auditorium regardless of capacity.
 
-     The parts matter. A seat pan and a backrest alone read as two floating
-     slabs, which is exactly what the first version looked like — the
-     standards underneath are what put the chair on the floor. */
+     The box-built chair remains as the fallback and goes up immediately:
+     the model arrives over the network, and "nothing can fail to load" has
+     been the rule since room-studioVR. If or when the glb lands, the boxes
+     are swapped out. */
   buildChairs: function () {
+    const self = this;
+    this.chairFallback = this.buildBoxChairs();
+
+    const loader = new THREE.GLTFLoader();
+    loader.load('assets/chair.glb', function (gltf) {
+      /* Converters and exporters bury the mesh at arbitrary depth, and its
+         node can carry its own transform. Find it, and bake that transform
+         into the geometry rather than trusting the instance matrix to
+         reproduce it. Gotcha 8: model node transforms compose. */
+      let mesh = null;
+      gltf.scene.updateMatrixWorld(true);
+      gltf.scene.traverse(function (n) { if (n.isMesh && !mesh) { mesh = n; } });
+      if (!mesh) { console.warn('[sv] chair.glb had no mesh; keeping boxes'); return; }
+
+      const geo = mesh.geometry.clone();
+      geo.applyMatrix4(mesh.matrixWorld);
+
+      /* The model's origin is its feet at floor level, facing +z; our seats
+         face -z, so turn it round once, here, not per instance. */
+      geo.applyMatrix4(new THREE.Matrix4().makeRotationY(Math.PI));
+
+      const mat = mesh.material;
+      mat.side = THREE.FrontSide;          // exported doubleSided; not needed
+
+      const seats = self.seats;
+      const inst = new THREE.InstancedMesh(geo, mat, seats.length);
+      const dummy = new THREE.Object3D();
+      seats.forEach(function (s, i) {
+        dummy.position.set(s.x, s.y, s.z);
+        dummy.rotation.set(0, s.yaw, 0);
+        dummy.scale.set(1, 1, 1);
+        dummy.updateMatrix();
+        inst.setMatrixAt(i, dummy.matrix);
+      });
+      inst.instanceMatrix.needsUpdate = true;
+
+      self.root.add(inst);
+      if (self.chairFallback) {
+        self.root.remove(self.chairFallback);
+        self.chairFallback.children.slice().forEach(function (m) {
+          m.geometry.dispose();
+        });
+        self.chairFallback = null;
+      }
+      console.log('[sv] chair.glb instanced across ' + seats.length +
+                  ' seats in 1 draw call');
+    }, undefined, function (err) {
+      console.warn('[sv] chair.glb failed to load; boxes stay', err);
+    });
+  },
+
+  /* The pre-model chair, kept whole as the fallback. */
+  buildBoxChairs: function () {
     const seats = this.seats;
     const dummy = new THREE.Object3D();
-    const self = this;
+    const group = new THREE.Group();
 
     const velour = ProcTex.get('velour', 1, 1);
     const cloth = new THREE.MeshStandardMaterial({
@@ -1402,7 +1457,6 @@ AFRAME.registerComponent('sv-crowd', {
     if (frameTex) { frame.map = frameTex.map; }
 
     const parts = [
-      // geometry,                                    material, per-seat placements
       { g: new THREE.BoxGeometry(0.50, 0.09, 0.44), m: cloth, at: [
           { p: [0, -0.02, 0.02], r: [-0.05, 0, 0] } ] },              // pan
       { g: new THREE.BoxGeometry(0.50, 0.54, 0.07), m: cloth, at: [
@@ -1426,9 +1480,6 @@ AFRAME.registerComponent('sv-crowd', {
       seats.forEach(function (s) {
         q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), s.yaw);
         part.at.forEach(function (a) {
-          /* Place the part in the chair's own space, then rotate the whole
-             chair into the row's yaw — otherwise the armrests stay
-             axis-aligned while the seat turns. */
           off.set(a.p[0], a.p[1], a.p[2]).applyQuaternion(q);
           dummy.position.set(s.x + off.x, s.y + SEAT_H + off.y, s.z + off.z);
           dummy.rotation.set(0, 0, 0);
@@ -1440,8 +1491,10 @@ AFRAME.registerComponent('sv-crowd', {
         });
       });
       inst.instanceMatrix.needsUpdate = true;
-      self.root.add(inst);
+      group.add(inst);
     });
+    this.root.add(group);
+    return group;
   },
 
   /* ------------------------------------------------------- head texture
