@@ -72,6 +72,33 @@
   #devpanel .stat { font-variant-numeric: tabular-nums; color: #7f8aa0; }
   kbd { background: #1e2534; border: 1px solid #2c3547; border-bottom-width: 2px;
         border-radius: 4px; padding: 1px 5px; font-size: 11px; font-family: inherit; }
+
+  /* ---- End-of-session report ------------------------------------------ */
+  #report {
+    position: fixed; inset: 0; z-index: 8000; display: none;
+    align-items: center; justify-content: center; padding: 24px;
+    background: rgba(6,8,13,.90); backdrop-filter: blur(8px);
+    color: #e8ecf4; box-sizing: border-box; overflow-y: auto;
+  }
+  #report.on { display: flex; }
+  #report .sheet { width: min(620px, 100%); }
+  #report h2 { margin: 0 0 3px; font-size: 22px; font-weight: 650; letter-spacing: -.02em; }
+  #report .meta { color: #7c8699; font-size: 13px; margin-bottom: 20px; }
+  #report .lines { margin: 0 0 22px; padding: 0; list-style: none; }
+  #report .lines li { font-size: 14.5px; line-height: 1.6; color: #cfd6e4;
+                      padding: 7px 0 7px 15px; border-left: 2px solid #2b3448; margin-bottom: 3px; }
+  #report .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 20px; }
+  #report .cell { background: #101521; border: 1px solid #212a3b; border-radius: 9px; padding: 11px 12px; }
+  #report .cell b { display: block; font-size: 19px; font-weight: 600;
+                    font-variant-numeric: tabular-nums; margin-bottom: 2px; }
+  #report .cell span { font-size: 11px; color: #6d7a92; text-transform: uppercase; letter-spacing: .07em; }
+  #report .bars { margin-bottom: 20px; }
+  #report .bar { display: flex; align-items: center; gap: 10px; margin: 6px 0; font-size: 12.5px; }
+  #report .bar i { display: block; height: 9px; border-radius: 5px; background: #3f7fbf; }
+  #report .bar em { color: #7c8699; font-style: normal; width: 96px; }
+  #report .bar u { color: #98a2b8; text-decoration: none;
+                   font-variant-numeric: tabular-nums; width: 42px; text-align: right; }
+  #report .track { flex: 1; background: #171d29; border-radius: 5px; overflow: hidden; }
 </style>
 </head>
 
@@ -117,13 +144,31 @@
   <div class="row"><button id="btnCrowd">Audience +</button>
                    <button id="btnMood">Mood</button>
                    <span class="stat" id="crowdState">0</span></div>
+  <div class="row"><button id="btnSession">Start session</button>
+                   <span class="stat" id="sessState">idle</span></div>
   <div class="row"><button id="btnClap">Applause</button>
                    <button id="btnCough">Cough</button>
                    <span class="stat" id="roomState">—</span></div>
   <div class="row"><span class="stat" id="devStats">—</span></div>
   <div class="row"><span class="stat"><kbd>L</kbd> lights &nbsp; <kbd>C</kbd> audience &nbsp;
                    <kbd>V</kbd> mood &nbsp; <kbd>space</kbd> applause &nbsp;
-                   <kbd>X</kbd> cough &nbsp; <kbd>R</kbd> reset pose</span></div>
+                   <kbd>X</kbd> cough &nbsp; <kbd>R</kbd> reset pose &nbsp;
+                   <kbd>Enter</kbd> start/stop session</span></div>
+</div>
+
+<!-- ========================================================================
+     END-OF-SESSION REPORT
+     ===================================================================== -->
+<div id="report">
+  <div class="sheet">
+    <h2>How that went</h2>
+    <div class="meta" id="repMeta">—</div>
+    <div class="grid" id="repGrid"></div>
+    <ul class="lines" id="repLines"></ul>
+    <div class="bars" id="repBars"></div>
+    <button id="repClose">Close</button>
+    <button id="repAgain" class="ghost">Go again</button>
+  </div>
 </div>
 
 <!-- ========================================================================
@@ -2116,6 +2161,277 @@ const Room = {
 };
 
 /* =========================================================================
+   6d. Session — the thing that makes this a trainer and not a room
+   ------------------------------------------------------------------------
+   Everything here is computed in the browser with no ML and no server, from
+   two sources that are already open: the microphone, and the headset pose
+   the scene is drawing from anyway.
+
+   The output is deliberately NOT a score out of ten. A number invites you to
+   game it; a few honest observations tell you what to do differently. See
+   the metrics table in the brief.
+   ====================================================================== */
+const Session = {
+  running: false,
+  t0: 0, tEnd: 0,
+  lastT: 0,
+
+  /* accumulators */
+  voiced: 0, total: 0,           // ms
+  dbSum: 0, dbN: 0, dbMin: 99, dbMax: -99,
+  quietMs: 0, loudMs: 0,
+  pauses: [], pauseStart: 0, inPause: false,
+  syllables: 0, envPrev: 0, envRising: false,
+  pitches: [],
+  gaze: [0, 0, 0, 0],            // left · centre · right · down(notes)
+  gazeMs: 0,
+  moveSum: 0, moveN: 0, lastPose: null,
+  wpmWindow: [],                 // [{t, syllables}] for drift
+
+  reset: function () {
+    this.voiced = 0; this.total = 0;
+    this.dbSum = 0; this.dbN = 0; this.dbMin = 99; this.dbMax = -99;
+    this.quietMs = 0; this.loudMs = 0;
+    this.pauses = []; this.inPause = false; this.pauseStart = 0;
+    this.syllables = 0; this.envPrev = 0; this.envRising = false;
+    this.pitches = [];
+    this.gaze = [0, 0, 0, 0]; this.gazeMs = 0;
+    this.moveSum = 0; this.moveN = 0; this.lastPose = null;
+    this.wpmWindow = [];
+  },
+
+  start: function (now) {
+    this.reset();
+    this.running = true;
+    this.t0 = now; this.lastT = now;
+    console.log('[sv] session started');
+  },
+
+  stop: function (now) {
+    if (!this.running) { return null; }
+    this.running = false;
+    this.tEnd = now;
+    /* A pause still open when you stop is a pause, not a silence. */
+    if (this.inPause && now - this.pauseStart > 1500) {
+      this.pauses.push(now - this.pauseStart);
+    }
+    const r = this.report();
+    console.log('[sv] session ended: ' + r.lines.join(' | '));
+    return r;
+  },
+
+  /* ---- pitch by autocorrelation ---------------------------------------
+     Runs at 8Hz on a decimated copy, not per frame: the naive form is
+     O(window x lagRange), which at full rate would cost more than the
+     renderer. Monotony is the commonest fault in nervous speaking and it is
+     the variance of this, not its value, that matters. */
+  pitchOf: function (buf, rate) {
+    const D = 2;                                  // decimate to ~24kHz
+    const n = Math.floor(buf.length / D);
+    if (!this._pb || this._pb.length !== n) { this._pb = new Float32Array(n); }
+    const b = this._pb;
+    let rms = 0;
+    for (let i = 0; i < n; i++) { b[i] = buf[i * D]; rms += b[i] * b[i]; }
+    rms = Math.sqrt(rms / n);
+    if (rms < 0.012) { return -1; }               // unvoiced or silent
+
+    const sr = rate / D;
+    const minLag = Math.floor(sr / 380);          // 380Hz ceiling
+    const maxLag = Math.min(n - 2, Math.floor(sr / 70));   // 70Hz floor
+
+    /* Prefix sums of squares, so each lag's two window energies are O(1)
+       instead of O(n). Without this the normalised form costs three times
+       the naive one and stops being affordable in a frame. */
+    if (!this._ps || this._ps.length !== n + 1) { this._ps = new Float64Array(n + 1); }
+    const ps = this._ps;
+    ps[0] = 0;
+    for (let i = 0; i < n; i++) { ps[i + 1] = ps[i] + b[i] * b[i]; }
+
+    if (!this._corr || this._corr.length < maxLag + 2) {
+      this._corr = new Float32Array(maxLag + 2);
+    }
+    const c = this._corr;
+    let best = 0;
+    for (let lag = minLag; lag <= maxLag; lag++) {
+      let s = 0;
+      const m = n - lag;
+      for (let i = 0; i < m; i++) { s += b[i] * b[i + lag]; }
+      const e = Math.sqrt((ps[m] - ps[0]) * (ps[n] - ps[lag]));
+      c[lag] = e > 1e-9 ? s / e : 0;
+      if (c[lag] > best) { best = c[lag]; }
+    }
+    if (best < 0.35) { return -1; }               // not periodic enough to be voiced
+
+    /* Take the FIRST peak that gets close to the best, not the best itself.
+       Autocorrelation at twice the period is almost as strong as at the
+       period, so picking the global maximum reports an octave (or a third)
+       too low — measured at 87Hz for a 175Hz tone before this. */
+    const thresh = best * 0.88;
+    for (let lag = minLag + 1; lag < maxLag; lag++) {
+      if (c[lag] >= thresh && c[lag] >= c[lag - 1] && c[lag] >= c[lag + 1]) {
+        // parabolic interpolation across the peak, for sub-bin accuracy
+        const a0 = c[lag - 1], a1 = c[lag], a2 = c[lag + 1];
+        const den = a0 - 2 * a1 + a2;
+        const shift = den !== 0 ? 0.5 * (a0 - a2) / den : 0;
+        return sr / (lag + shift);
+      }
+    }
+    return -1;
+  },
+
+  /* ---- called every frame while running ------------------------------ */
+  tick: function (now, cam) {
+    if (!this.running) { return; }
+    const dt = Math.min(now - this.lastT, 200);
+    this.lastT = now;
+    this.total += dt;
+
+    if (Mic.ready) {
+      const db = Mic.db;
+      this.dbSum += db; this.dbN++;
+      if (db > this.dbMax) { this.dbMax = db; }
+      if (db < this.dbMin && db > -85) { this.dbMin = db; }
+
+      const speaking = db > -46;
+      if (speaking) {
+        this.voiced += dt;
+        if (db < -38) { this.quietMs += dt; }
+        if (db > -12) { this.loudMs += dt; }
+        if (this.inPause) {
+          const len = now - this.pauseStart;
+          if (len > 1500) { this.pauses.push(len); }
+          this.inPause = false;
+        }
+      } else if (!this.inPause) {
+        this.inPause = true; this.pauseStart = now;
+      }
+
+      /* Pace from the energy envelope: each rising edge above the running
+         floor is roughly one syllable. Crude, but it tracks the thing that
+         actually matters — whether you speed up when frightened. */
+      const env = Mic.level;
+      const floorLvl = 0.18;
+      if (!this.envRising && env > this.envPrev + 0.012 && env > floorLvl) {
+        this.envRising = true;
+        this.syllables++;
+        this.wpmWindow.push(now);
+        if (this.wpmWindow.length > 400) { this.wpmWindow.shift(); }
+      } else if (this.envRising && env < this.envPrev - 0.008) {
+        this.envRising = false;
+      }
+      this.envPrev = env;
+
+      if (now > (this._nextPitch || 0)) {
+        this._nextPitch = now + 125;
+        if (speaking && Mic.analyser && Mic.buf) {
+          const f = this.pitchOf(Mic.buf, Mic.ctx.sampleRate);
+          if (f > 0) { this.pitches.push(f); }
+        }
+      }
+    }
+
+    /* ---- gaze and stillness, free from the headset pose ---------------- */
+    if (cam) {
+      if (!this._v) { this._v = new THREE.Vector3(); this._q = new THREE.Quaternion(); }
+      cam.getWorldQuaternion(this._q);
+      this._v.set(0, 0, -1).applyQuaternion(this._q);
+
+      if (this._v.y < -0.45) { this.gaze[3] += dt; }        // down at notes
+      else {
+        /* Bucket by where in the house you are looking, not by raw yaw:
+           what matters is whether one third of the room never gets looked at. */
+        const yaw = Math.atan2(this._v.x, this._v.z);       // +z is the house
+        if (yaw > 0.30) { this.gaze[0] += dt; }
+        else if (yaw < -0.30) { this.gaze[2] += dt; }
+        else { this.gaze[1] += dt; }
+      }
+      this.gazeMs += dt;
+
+      cam.getWorldPosition(this._v);
+      if (this.lastPose) {
+        const dx = this._v.x - this.lastPose.x;
+        const dy = this._v.y - this.lastPose.y;
+        const dz = this._v.z - this.lastPose.z;
+        this.moveSum += Math.sqrt(dx * dx + dy * dy + dz * dz);
+        this.moveN++;
+      } else { this.lastPose = { x: 0, y: 0, z: 0 }; }
+      this.lastPose.x = this._v.x; this.lastPose.y = this._v.y; this.lastPose.z = this._v.z;
+    }
+  },
+
+  /* ---- the report ------------------------------------------------------
+     A few honest lines and a couple of charts, not a score. */
+  report: function () {
+    const secs = Math.max(0.001, (this.tEnd - this.t0) / 1000);
+    const talkPct = this.total > 0 ? (this.voiced / this.total) * 100 : 0;
+    const avgDb = this.dbN ? this.dbSum / this.dbN : -90;
+
+    /* Words per minute over VOICED time only — counting the silences would
+       flatter you for pausing. ~1.4 syllables per English word. */
+    const voicedMin = Math.max(0.02, this.voiced / 60000);
+    const wpm = (this.syllables / 1.4) / voicedMin;
+
+    /* Monotony as the standard deviation of pitch in SEMITONES, which is how
+       a listener hears variation — 20Hz means something different at 100Hz
+       than at 250Hz. Lively speech runs about 2-4 semitones. */
+    let semis = 0, medPitch = 0;
+    if (this.pitches.length > 6) {
+      const sorted = this.pitches.slice().sort(function (a, b) { return a - b; });
+      medPitch = sorted[Math.floor(sorted.length / 2)];
+      let s = 0, n = 0;
+      for (let i = 0; i < this.pitches.length; i++) {
+        const st = 12 * Math.log2(this.pitches[i] / medPitch);
+        if (Math.abs(st) < 12) { s += st * st; n++; }      // reject octave errors
+      }
+      semis = n ? Math.sqrt(s / n) : 0;
+    }
+
+    const longest = this.pauses.length ? Math.max.apply(null, this.pauses) : 0;
+    const gz = this.gazeMs || 1;
+    const gaze = this.gaze.map(function (v) { return (v / gz) * 100; });
+    const fidget = this.moveN ? (this.moveSum / this.moveN) * 1000 : 0;
+
+    /* --- the honest lines --- */
+    const L = [];
+    if (this.dbN === 0) { L.push('No microphone, so nothing was heard. Volume, pace, pauses and monotony all need it.'); }
+    else if (avgDb < -40) { L.push('You were too quiet for the back row. Aim to sit around -30dB, not -40.'); }
+    else if (avgDb > -14) { L.push('You were loud throughout. Room to drop and use volume for emphasis instead.'); }
+    else { L.push('Your level sat in a good range for the room.'); }
+
+    if (this.dbN > 0) {
+      if (wpm > 175) { L.push('You spoke at about ' + Math.round(wpm) + ' words a minute, which is fast. Nerves usually show up here first.'); }
+      else if (wpm < 105 && wpm > 20) { L.push('You spoke at about ' + Math.round(wpm) + ' words a minute, on the slow side.'); }
+      else if (wpm >= 105) { L.push('Your pace, about ' + Math.round(wpm) + ' words a minute, was comfortable to follow.'); }
+
+      if (longest > 4000) { L.push('Your longest pause ran ' + (longest / 1000).toFixed(1) + 's. That is long enough to read as a freeze rather than a beat.'); }
+      else if (this.pauses.length === 0) { L.push('You never paused for over 1.5s. Deliberate silence is worth more than it feels like.'); }
+      else { L.push('You used ' + this.pauses.length + ' pause' + (this.pauses.length === 1 ? '' : 's') + ' over 1.5s, the longest ' + (longest / 1000).toFixed(1) + 's.'); }
+
+      if (this.pitches.length > 6) {
+        if (semis < 1.4) { L.push('Your pitch barely moved (' + semis.toFixed(1) + ' semitones). Flat delivery is the commonest fault and the easiest to fix.'); }
+        else if (semis > 4.5) { L.push('Your pitch ranged widely (' + semis.toFixed(1) + ' semitones), which reads as animated.'); }
+        else { L.push('Your pitch varied by ' + semis.toFixed(1) + ' semitones — a natural range.'); }
+      }
+      L.push('You were actually speaking for ' + Math.round(talkPct) + '% of the time.');
+    }
+
+    const most = gaze.indexOf(Math.max(gaze[0], gaze[1], gaze[2]));
+    const names = ['the left of the room', 'straight ahead', 'the right of the room'];
+    if (gaze[3] > 35) { L.push('You spent ' + Math.round(gaze[3]) + '% of the time looking down. That is where notes live, not the audience.'); }
+    if (Math.max(gaze[0], gaze[1], gaze[2]) > 62) { L.push('You favoured ' + names[most] + ' for ' + Math.round(gaze[most]) + '% of your time. Whole sections got no eye contact at all.'); }
+    else if (this.gazeMs > 3000) { L.push('You spread your attention across the room reasonably evenly.'); }
+
+    return {
+      seconds: secs, talkPct: talkPct, avgDb: avgDb, wpm: wpm,
+      pauses: this.pauses.length, longestPause: longest,
+      semitones: semis, medianPitch: medPitch,
+      gaze: gaze, fidget: fidget, syllables: this.syllables,
+      hadMic: this.dbN > 0, lines: L
+    };
+  }
+};
+
+/* =========================================================================
    6c. sv-audio — keeps the listener on your head and the room listening
    ====================================================================== */
 AFRAME.registerComponent('sv-audio', {
@@ -2146,6 +2462,10 @@ AFRAME.registerComponent('sv-audio', {
     if (Mic.ready) {
       Room.duck(Mic.db > -46 ? 1 : 0);
     }
+
+    /* The session reads the same mic sample and the same camera the scene
+       is already using, so measuring costs almost nothing. */
+    Session.tick(t, cam);
   }
 });
 
@@ -2655,6 +2975,79 @@ AFRAME.registerComponent('sv-snapturn', {
   document.getElementById('btnClap').addEventListener('click', window.svApplause);
   document.getElementById('btnCough').addEventListener('click', window.svCough);
 
+  /* ---------------------------------------------------------- session ---
+     Start, speak, stop, read what actually happened. */
+  const repEl = document.getElementById('report');
+
+  function fmtTime (s) {
+    const m = Math.floor(s / 60);
+    return m + ':' + String(Math.floor(s % 60)).padStart(2, '0');
+  }
+
+  function showReport (r) {
+    document.getElementById('repMeta').textContent =
+      fmtTime(r.seconds) + ' on stage · ' +
+      (r.hadMic ? Math.round(r.talkPct) + '% of it speaking' : 'no microphone');
+
+    const cells = [
+      [r.hadMic ? Math.round(r.avgDb) + ' dB' : '—', 'avg level'],
+      [r.hadMic && r.wpm > 20 ? Math.round(r.wpm) : '—', 'words / min'],
+      [r.hadMic ? r.pauses : '—', 'pauses > 1.5s'],
+      [r.hadMic && r.semitones ? r.semitones.toFixed(1) : '—', 'pitch range (st)']
+    ];
+    document.getElementById('repGrid').innerHTML = cells.map(function (c) {
+      return '<div class="cell"><b>' + c[0] + '</b><span>' + c[1] + '</span></div>';
+    }).join('');
+
+    document.getElementById('repLines').innerHTML =
+      r.lines.map(function (l) { return '<li>' + l + '</li>'; }).join('');
+
+    /* Gaze is the one chart worth drawing: staring into one corner for four
+       minutes is real, measurable and fixable, and invisible from inside. */
+    const names = ['Left of room', 'Straight ahead', 'Right of room', 'Down / notes'];
+    document.getElementById('repBars').innerHTML =
+      '<div style="font-size:12px;color:#6d7a92;text-transform:uppercase;' +
+      'letter-spacing:.07em;margin-bottom:8px">Where you looked</div>' +
+      r.gaze.map(function (v, i) {
+        return '<div class="bar"><em>' + names[i] + '</em>' +
+               '<span class="track"><i style="width:' + Math.max(1, v).toFixed(0) + '%"></i></span>' +
+               '<u>' + Math.round(v) + '%</u></div>';
+      }).join('');
+
+    repEl.classList.add('on');
+  }
+
+  function setSessionUI (on) {
+    document.getElementById('btnSession').textContent = on ? 'Stop session' : 'Start session';
+    document.getElementById('sessState').textContent = on ? 'recording' : 'idle';
+  }
+
+  window.svToggleSession = function () {
+    const now = performance.now();
+    if (Session.running) {
+      const r = Session.stop(now);
+      setSessionUI(false);
+      /* Applause is the reward, so it lands with the report. */
+      const c = scene.components['sv-crowd'];
+      const n = c ? CROWD_PRESETS[c.data.preset] : 0;
+      if (n > 0) { Room.applause(Math.max(4, n), 4.5); }
+      if (r) { showReport(r); }
+    } else {
+      repEl.classList.remove('on');
+      Session.start(now);
+      setSessionUI(true);
+    }
+  };
+
+  document.getElementById('btnSession').addEventListener('click', window.svToggleSession);
+  document.getElementById('repClose').addEventListener('click', function () {
+    repEl.classList.remove('on');
+  });
+  document.getElementById('repAgain').addEventListener('click', function () {
+    repEl.classList.remove('on');
+    window.svToggleSession();
+  });
+
   window.addEventListener('keydown', function (e) {
     if (e.code === 'KeyL') {
       const l = scene.components['sv-lighting'];
@@ -2664,6 +3057,7 @@ AFRAME.registerComponent('sv-snapturn', {
     if (e.code === 'KeyV') { window.svStepMood(); }
     if (e.code === 'Space') { e.preventDefault(); window.svApplause(); }
     if (e.code === 'KeyX') { window.svCough(); }
+    if (e.code === 'Enter') { window.svToggleSession(); }
   });
 
   scene.addEventListener('loaded', function () {
