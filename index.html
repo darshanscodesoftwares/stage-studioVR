@@ -1246,12 +1246,18 @@ const PEOPLE = [
 ];
 const CHAIR_PAN_Y = 0.44;              // chair.glb pan height
 
-/* Slide the figure back onto the seat. Its origin sits near the knees, not
-   under the bum, so placing the origin at the seat point left every person
-   perched on the front lip with 25cm of empty chair visible behind them —
-   measured, chair back edge -1.454 against a figure back edge of -1.702.
-   The chair faces -z, so "back" is +z in the seat's own frame. */
-const SEAT_BACK_OFFSET = 0.17;
+/* Depth offset onto the seat. ZERO is correct, and the reason is worth
+   keeping: a previous version set this to 0.17 after comparing the figure's
+   BOUNDING BOX with the chair's and finding it 25cm forward. That metric is
+   worthless here — a seated figure's box is dominated by knees and feet
+   projecting past the chair, so a correctly-seated person always measures
+   "too far forward".
+
+   The metric that means something is where the BUTTOCK sits along the seat
+   pan. At offset 0 it lands 64% back, which is how a person sits. At 0.17 it
+   was 102% — over the rear edge, perching everyone off the back of their
+   chair. */
+const SEAT_BACK_OFFSET = 0.0;
 
 /* The neck chain the attention code turns. Spreading the rotation across
    four joints is what makes a head turn read as a neck rather than a hinge
