@@ -149,14 +149,26 @@ def clothe(HumanService, mesh, i, male):
         int(hash01(i, 12) * 10) % len(MALE_SUITS if male else FEMALE_SUITS)]
     hair = HAIR[int(hash01(i, 13) * 10) % len(HAIR)]
     shoe = SHOES[int(hash01(i, 14) * 10) % len(SHOES)]
-    for kind, name in (("Clothes", "clothes/%s/%s.mhclo" % (suit, suit)),
-                       ("Hair", "hair/%s/%s.mhclo" % (hair, hair)),
-                       ("Clothes", "clothes/%s/%s.mhclo" % (shoe, shoe))):
+    # Garments are NOT rigged; hair is.
+    #
+    # Skinning a fitted garment to the body's skeleton was what tore every
+    # shirt apart. Interpolated weights give chest vertices near the armpit a
+    # share of the ARM bones, so the seated shoulder rotation drags them out
+    # into shards across the chest - the white and dark fragments visible on
+    # every figure. Proved by elimination: an unposed, unrigged fit is
+    # flawless; subdivision made no difference; fitting order made no
+    # difference; removing the rigging fixed it outright.
+    #
+    # Nothing about a shirt needs to move at runtime - only the neck rotates,
+    # which is why hair keeps its rigging and the clothes do not.
+    for kind, name, rig in (("Clothes", "clothes/%s/%s.mhclo" % (suit, suit), False),
+                            ("Hair", "hair/%s/%s.mhclo" % (hair, hair), True),
+                            ("Clothes", "clothes/%s/%s.mhclo" % (shoe, shoe), False)):
         path = os.path.join(DATA, name)
         if os.path.exists(path):
             HumanService.add_mhclo_asset(path, mesh, asset_type=kind,
-                                         set_up_rigging=True,
-                                         interpolate_weights=True)
+                                         set_up_rigging=rig,
+                                         interpolate_weights=rig)
 
 
 SEAT_TO_FLOOR = 0.44          # chair pan height; must match CHAIR_PAN_Y in index.html
@@ -312,14 +324,13 @@ def bake_pose(arm, shin=None):
         bpy.context.view_layer.objects.active = o
         if o.data.shape_keys:
             bpy.ops.object.shape_key_remove(all=True, apply_mix=True)
+        # Masks are NOT applied here. They delete the helper vertices, and
+        # mhclo maps clothes onto the FULL base mesh including helpers, so
+        # applying them before the garments are fitted kills the fit - mhclo
+        # indexes past the end of the mesh and the import dies.
         for m in list(o.modifiers):
             if m.type == "SUBSURF":
-                o.modifiers.remove(m)              # never ship subdivision
-            elif m.type == "MASK":
-                try:
-                    bpy.ops.object.modifier_apply(modifier=m.name)
-                except Exception:
-                    pass
+                o.modifiers.remove(m)
         # Bake the pose into the vertices via a COPY of the armature
         # modifier, so the original stays behind to keep driving the mesh
         # once the pose becomes the rest pose.
@@ -361,11 +372,28 @@ def generate(out_dir, count):
         HumanService.add_builtin_rig(mesh, "default", import_weights=True)
         arm = [o for o in bpy.data.objects if o.type == "ARMATURE"][0]
 
-        clothe(HumanService, mesh, i, macros["gender"] > 0.5)
-
         shin = SHIN.get(i, SHIN_NOMINAL)
         print("GEN   person_%02d shin %d deg" % (i, shin))
         bake_pose(arm, shin)
+
+        # Fitted to the ALREADY SEATED body, because the garments carry no
+        # skinning to deform them into the pose.
+        clothe(HumanService, mesh, i, macros["gender"] > 0.5)
+
+        for o in [o for o in bpy.data.objects if o.type == "MESH"]:
+            bpy.ops.object.select_all(action="DESELECT")
+            o.select_set(True)
+            bpy.context.view_layer.objects.active = o
+            if o.data.shape_keys:
+                bpy.ops.object.shape_key_remove(all=True, apply_mix=True)
+            for md in list(o.modifiers):
+                if md.type == "SUBSURF":
+                    o.modifiers.remove(md)
+                elif md.type == "MASK":
+                    try:
+                        bpy.ops.object.modifier_apply(modifier=md.name)
+                    except Exception:
+                        pass
 
         # skin material for the body mesh (clothes keep their own)
         tone = 0.3 + hash01(i, 11) * 0.5
