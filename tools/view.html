@@ -18,6 +18,7 @@
   html, body { margin: 0; height: 100%; background: #2f343d; overflow: hidden;
                font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
   #ui { position: fixed; top: 12px; left: 12px; z-index: 100;
+        max-height: 92vh; overflow-y: auto;
         background: rgba(12,16,23,.88); border: 1px solid #262f40;
         border-radius: 10px; padding: 12px 14px; color: #dfe5ef; font-size: 13px;
         backdrop-filter: blur(6px); max-width: 280px; }
@@ -85,14 +86,18 @@ var ASSETS = [
   { key: '6', label: 'p05', url: '../assets/people/person_05.glb' }
 ];
 
-/* Which mesh belongs to which part. Names come straight from the generator:
-   the body is 'base', garments carry their mhclo name. */
+/* Which mesh belongs to which part.
+   Match the GARMENTS by name and let everything else be the body. The first
+   version did the opposite - body was whatever contained 'base' - and the
+   body mesh is called 'Human' in some exports and 'base' in others, so
+   hiding the clothes hid the person too. Identify the things with known
+   names; treat the remainder as the one thing that has no fixed name. */
 function partOf (name) {
-  var n = name.toLowerCase();
-  if (n.indexOf('base') >= 0) { return 'base'; }
-  if (n.indexOf('shoe') >= 0) { return 'shoe'; }
-  if (/bob|short|long|ponytail|afro|braid/.test(n)) { return 'hair'; }
-  return 'suit';
+  var n = (name || '').toLowerCase();
+  if (/shoe/.test(n)) { return 'shoe'; }
+  if (/bob|short0|long0|ponytail|afro|braid|hair|fedora/.test(n)) { return 'hair'; }
+  if (/suit|shirt|trouser|jean|dress|skirt|cloth/.test(n)) { return 'suit'; }
+  return 'base';
 }
 
 var modelEl = document.getElementById('model');
@@ -105,7 +110,12 @@ function load (i) {
   current = i;
   var a = ASSETS[i];
   modelEl.removeAttribute('gltf-model');
-  modelEl.setAttribute('gltf-model', 'url(' + a.url + ')');
+  /* Cache-bust every load. These are the same URLs index.html fetches, so
+     without this the viewer happily serves whatever the browser cached from
+     the scene - which once showed torn shirts that had already been fixed
+     and regenerated on disk. A debug tool that can show you a stale asset is
+     worse than no debug tool. */
+  modelEl.setAttribute('gltf-model', 'url(' + a.url + '?t=' + Date.now() + ')');
   document.querySelectorAll('#pick button').forEach(function (b, n) {
     b.classList.toggle('on', n === i);
   });
@@ -114,7 +124,11 @@ function load (i) {
 
 modelEl.addEventListener('model-loaded', function (e) {
   var root = e.detail.model;
-  var tris = 0, meshes = 0, bones = 0, parts = {};
+  if (modelEl._helper) {                 // belongs to the previous model
+    modelEl.object3D.remove(modelEl._helper);
+    modelEl._helper = null;
+  }
+  var tris = 0, meshes = 0, bones = 0, parts = {}, names = [];
   root.traverse(function (n) {
     if (n.isMesh) {
       meshes++;
@@ -123,6 +137,8 @@ modelEl.addEventListener('model-loaded', function (e) {
       tris += t;
       var p = partOf(n.name);
       parts[p] = (parts[p] || 0) + t;
+      names.push('&nbsp;<b>' + p + '</b> &larr; ' + n.name +
+                 (n.isSkinnedMesh ? ' <i>(skinned)</i>' : ''));
       n.frustumCulled = false;
     }
     if (n.isBone) { bones++; }
@@ -136,10 +152,13 @@ modelEl.addEventListener('model-loaded', function (e) {
   orbit.target.set(0, mid.y, 0);
   orbit.dist = Math.max(size.x, size.y, size.z) * 1.9;
 
-  document.getElementById('stat').textContent =
+  var breakdown = Object.keys(parts).map(function (k) {
+    return k + ' ' + Math.round(parts[k]).toLocaleString();
+  }).join(' · ');
+  document.getElementById('stat').innerHTML =
     ASSETS[current].label + ' · ' + Math.round(tris).toLocaleString() + ' tris · ' +
-    meshes + ' meshes · ' + bones + ' bones · ' +
-    size.y.toFixed(2) + 'm tall';
+    meshes + ' meshes · ' + bones + ' bones · ' + size.y.toFixed(2) + 'm tall' +
+    '<br>' + breakdown + '<br>' + names.join('<br>');
 
   apply();
   place();
@@ -161,13 +180,22 @@ function apply () {
   });
 
   if (showBones && !modelEl._helper) {
+    /* Build against the SkinnedMesh's root, and only once per model - the
+       first version made the helper once for the life of the page, so it
+       kept pointing at the skeleton of whichever figure happened to load
+       first and showed nothing after a switch. */
     var skinned = null;
     m.traverse(function (n) { if (n.isSkinnedMesh && !skinned) { skinned = n; } });
     if (skinned) {
-      var h = new THREE.SkeletonHelper(skinned);
-      h.material.linewidth = 2;
-      scene.object3D.add(h);
+      var h = new THREE.SkeletonHelper(skinned.skeleton.bones[0].parent || skinned);
+      h.material.depthTest = false;      // bones read through the body
+      h.material.transparent = true;
+      h.material.opacity = 0.9;
+      h.renderOrder = 999;
+      modelEl.object3D.add(h);
       modelEl._helper = h;
+    } else {
+      document.getElementById('stat').textContent += '  · no skeleton in this model';
     }
   }
   if (modelEl._helper) { modelEl._helper.visible = showBones; }
@@ -240,6 +268,7 @@ ASSETS.forEach(function (a, i) {
   b.addEventListener('click', function () { load(i); });
   document.getElementById('pick').appendChild(b);
 });
+if (window.THREE && THREE.Cache) { THREE.Cache.enabled = false; }
 scene.addEventListener('loaded', function () { load(1); place(); });
 </script>
 </body>
