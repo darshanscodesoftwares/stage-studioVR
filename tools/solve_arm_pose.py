@@ -30,7 +30,12 @@ try:
     print('PROBE shldrL= %.3f %.3f %.3f' % tuple(sh))
     # target: on top of the thigh, 60% toward the knee, a little above the surface
     t = hip.lerp(knee, 0.60)
-    target = mathutils.Vector((t.x, t.y, t.z + 0.085))
+    # Clearance above the thigh BONE, not the thigh surface. The bone runs
+    # through the middle of the leg, so 0.085 solved the wrist into the
+    # flesh: the hand sank inside the thigh and only fingertips emerged the
+    # far side, which reads as a mangled hand at any distance. The thigh is
+    # ~0.10 in radius here, plus half a hand's thickness to rest ON it.
+    target = mathutils.Vector((t.x, t.y, t.z + 0.155))
     print('PROBE targetL = %.3f %.3f %.3f' % tuple(target))
 
     ua = arm.pose.bones['upperarm01.L']; la = arm.pose.bones['lowerarm01.L']

@@ -59,14 +59,23 @@ DATA = os.path.expanduser(
 #
 # So the solver grid-searches upper-arm x/roll/z and elbow x, evaluates each
 # pose, and scores it by how close the WRIST lands to a target measured on
-# the figure's own thigh: 60% of the way from hip to knee, a little above
-# the surface. The winner puts the wrist within 2cm of it. Rerun the solver
-# if the seated leg pose ever changes, because the target moves with it.
+# the figure's own thigh: 60% of the way from hip to knee, clear of the
+# surface.
+#
+# The clearance is the part that matters and it was wrong for a long time.
+# The target was set 0.085 above the thigh BONE - but the bone runs through
+# the middle of the leg, so the solver dutifully placed the wrist inside the
+# thigh. The hand sank into the flesh with only fingertips emerging the far
+# side, which at any distance reads as a mangled, morphed hand, and no
+# amount of adjusting angles could fix it because the angles were doing
+# what they were told. Clearance is now 0.155: thigh radius plus half a
+# hand, so the palm rests ON the leg. Rerun the solver if the seated leg
+# pose changes, because the target moves with it.
 POSE = {
     "upperleg01.L": (-88, 0, -6), "upperleg01.R": (-88, 0, 6),
     "lowerleg01.L": (86, 0, 0),   "lowerleg01.R": (86, 0, 0),
-    "upperarm01.L": (10, -30, -76), "upperarm01.R": (10, 30, 76),
-    "lowerarm01.L": (20, 0, 0),     "lowerarm01.R": (20, 0, 0),
+    "upperarm01.L": (0, -30, -84),  "upperarm01.R": (0, 30, 84),
+    "lowerarm01.L": (50, 0, 0),     "lowerarm01.R": (50, 0, 0),
     "spine03": (6, 0, 0), "spine02": (4, 0, 0),
 }
 
