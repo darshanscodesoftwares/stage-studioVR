@@ -104,6 +104,23 @@ step, no `node_modules`, nothing to install. Edit the file, reload the headset.
   shadow casting from a hundred figures is not affordable and nobody looks at
   the floor.
 
+## Looking at an asset on its own
+
+`tools/view.html` loads any generated figure, or the chair, on a plain
+background with orbit controls. Serve the project root and open
+<http://localhost:8899/tools/view.html>.
+
+Number keys switch model, and the buttons isolate the **body / clothes /
+hair / shoes** independently, toggle **wireframe**, and draw the
+**skeleton**. It reports triangles, meshes, bones and real height.
+
+It is here because it earns its keep. Every fault in the audience that was
+actually fixed got found by looking at one model large and close — a hand
+buried inside a thigh, a shirt torn by skinning, a head severed at the neck
+— and isolating the parts is what identified each of them. Every attempt to
+diagnose the same faults from across the hall, by adjusting numbers and
+re-rendering the whole scene, failed and cost hours.
+
 ## Verifying a change
 
 Do not claim a change works without rendering it. From the project root:

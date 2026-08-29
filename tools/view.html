@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>stage-studioVR — asset viewer</title>
+<!-- Inspect a generated figure on its own, away from the scene.
+
+     Every fault in the audience that actually got fixed was found by looking
+     at one model large and close: the hand buried in the thigh, the torn
+     shirt, the severed neck. Every fix attempted from across the hall failed.
+     So this exists to make that the easy thing to do.
+
+     Serve from the project root and open /tools/view.html -
+        python3 -m http.server 8899
+-->
+<script src="https://aframe.io/releases/1.7.0/aframe.min.js"></script>
+<style>
+  html, body { margin: 0; height: 100%; background: #2f343d; overflow: hidden;
+               font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  #ui { position: fixed; top: 12px; left: 12px; z-index: 100;
+        background: rgba(12,16,23,.88); border: 1px solid #262f40;
+        border-radius: 10px; padding: 12px 14px; color: #dfe5ef; font-size: 13px;
+        backdrop-filter: blur(6px); max-width: 280px; }
+  #ui h1 { margin: 0 0 8px; font-size: 14px; font-weight: 620; letter-spacing: -.01em; }
+  #ui .row { margin: 7px 0; display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+  #ui button { font: inherit; font-size: 12px; border: 1px solid #2c3547;
+               background: #18202e; color: #cfd6e4; border-radius: 6px;
+               padding: 4px 9px; cursor: pointer; }
+  #ui button:hover { background: #223047; }
+  #ui button.on { background: #2f5c8a; border-color: #3d75ad; color: #fff; }
+  #ui .stat { color: #8b95ab; font-size: 12px; font-variant-numeric: tabular-nums; }
+  #ui kbd { background: #1e2534; border: 1px solid #2c3547; border-bottom-width: 2px;
+            border-radius: 4px; padding: 0 4px; font-size: 11px; font-family: inherit; }
+  #hint { position: fixed; bottom: 12px; left: 12px; z-index: 100;
+          color: #6f7a90; font-size: 12px; }
+</style>
+</head>
+<body>
+
+<div id="ui">
+  <h1>Asset viewer</h1>
+  <div class="row" id="pick"></div>
+  <div class="row">
+    <button data-part="base">body</button>
+    <button data-part="suit">clothes</button>
+    <button data-part="hair">hair</button>
+    <button data-part="shoe">shoes</button>
+  </div>
+  <div class="row">
+    <button id="wire">wireframe</button>
+    <button id="bones">skeleton</button>
+  </div>
+  <div class="row"><span class="stat" id="stat">—</span></div>
+  <div class="row"><span class="stat">
+    drag orbit · scroll zoom · <kbd>1</kbd>–<kbd>6</kbd> figure · <kbd>0</kbd> chair
+  </span></div>
+</div>
+<div id="hint">served from the project root: <b>/tools/view.html</b></div>
+
+<a-scene id="scene" background="color: #2f343d"
+         renderer="antialias: true; colorManagement: true; toneMapping: ACESFilmic; exposure: 1.35"
+         vr-mode-ui="enabled: false">
+  <a-entity light="type: hemisphere; color: #eef3fb; groundColor: #6b6055; intensity: 1.05"></a-entity>
+  <a-entity light="type: directional; intensity: 2.0" position="2.5 4 3"></a-entity>
+  <a-entity light="type: directional; intensity: 0.7" position="-3 2 -2.5"></a-entity>
+
+  <a-entity id="model"></a-entity>
+
+  <!-- ground, so a figure's feet have something to read against -->
+  <a-plane rotation="-90 0 0" width="6" height="6"
+           material="color: #3d434d; roughness: 1"></a-plane>
+  <a-entity id="rig"><a-entity id="cam" camera="fov: 32"></a-entity></a-entity>
+</a-scene>
+
+<script>
+'use strict';
+
+var ASSETS = [
+  { key: '0', label: 'chair', url: '../assets/chair.glb' },
+  { key: '1', label: 'p00', url: '../assets/people/person_00.glb' },
+  { key: '2', label: 'p01', url: '../assets/people/person_01.glb' },
+  { key: '3', label: 'p02', url: '../assets/people/person_02.glb' },
+  { key: '4', label: 'p03', url: '../assets/people/person_03.glb' },
+  { key: '5', label: 'p04', url: '../assets/people/person_04.glb' },
+  { key: '6', label: 'p05', url: '../assets/people/person_05.glb' }
+];
+
+/* Which mesh belongs to which part. Names come straight from the generator:
+   the body is 'base', garments carry their mhclo name. */
+function partOf (name) {
+  var n = name.toLowerCase();
+  if (n.indexOf('base') >= 0) { return 'base'; }
+  if (n.indexOf('shoe') >= 0) { return 'shoe'; }
+  if (/bob|short|long|ponytail|afro|braid/.test(n)) { return 'hair'; }
+  return 'suit';
+}
+
+var modelEl = document.getElementById('model');
+var scene = document.getElementById('scene');
+var hidden = {}, wire = false, showBones = false, current = 1;
+var orbit = { yaw: 0.6, pitch: 0.15, dist: 2.0, target: new THREE.Vector3(0, 0.9, 0) };
+
+/* ---- load ------------------------------------------------------------- */
+function load (i) {
+  current = i;
+  var a = ASSETS[i];
+  modelEl.removeAttribute('gltf-model');
+  modelEl.setAttribute('gltf-model', 'url(' + a.url + ')');
+  document.querySelectorAll('#pick button').forEach(function (b, n) {
+    b.classList.toggle('on', n === i);
+  });
+  document.getElementById('stat').textContent = 'loading ' + a.label + '…';
+}
+
+modelEl.addEventListener('model-loaded', function (e) {
+  var root = e.detail.model;
+  var tris = 0, meshes = 0, bones = 0, parts = {};
+  root.traverse(function (n) {
+    if (n.isMesh) {
+      meshes++;
+      var t = n.geometry.index ? n.geometry.index.count / 3
+                               : n.geometry.attributes.position.count / 3;
+      tris += t;
+      var p = partOf(n.name);
+      parts[p] = (parts[p] || 0) + t;
+      n.frustumCulled = false;
+    }
+    if (n.isBone) { bones++; }
+  });
+
+  /* Frame the model rather than guessing a camera distance — figures and the
+     chair differ by a factor of two in height. */
+  var box = new THREE.Box3().setFromObject(root);
+  var size = box.getSize(new THREE.Vector3());
+  var mid = box.getCenter(new THREE.Vector3());
+  orbit.target.set(0, mid.y, 0);
+  orbit.dist = Math.max(size.x, size.y, size.z) * 1.9;
+
+  document.getElementById('stat').textContent =
+    ASSETS[current].label + ' · ' + Math.round(tris).toLocaleString() + ' tris · ' +
+    meshes + ' meshes · ' + bones + ' bones · ' +
+    size.y.toFixed(2) + 'm tall';
+
+  apply();
+  place();
+});
+
+/* ---- part isolation, wireframe, skeleton ------------------------------ */
+function apply () {
+  var m = modelEl.getObject3D('mesh');
+  if (!m) { return; }
+  m.traverse(function (n) {
+    if (n.isMesh) {
+      n.visible = !hidden[partOf(n.name)];
+      if (n.material) {
+        var mats = Array.isArray(n.material) ? n.material : [n.material];
+        mats.forEach(function (mat) { mat.wireframe = wire; });
+      }
+    }
+    if (n.isSkeletonHelper) { n.visible = showBones; }
+  });
+
+  if (showBones && !modelEl._helper) {
+    var skinned = null;
+    m.traverse(function (n) { if (n.isSkinnedMesh && !skinned) { skinned = n; } });
+    if (skinned) {
+      var h = new THREE.SkeletonHelper(skinned);
+      h.material.linewidth = 2;
+      scene.object3D.add(h);
+      modelEl._helper = h;
+    }
+  }
+  if (modelEl._helper) { modelEl._helper.visible = showBones; }
+}
+
+document.querySelectorAll('#ui button[data-part]').forEach(function (b) {
+  b.classList.add('on');
+  b.addEventListener('click', function () {
+    var p = b.dataset.part;
+    hidden[p] = !hidden[p];
+    b.classList.toggle('on', !hidden[p]);
+    apply();
+  });
+});
+document.getElementById('wire').addEventListener('click', function () {
+  wire = !wire; this.classList.toggle('on', wire); apply();
+});
+document.getElementById('bones').addEventListener('click', function () {
+  showBones = !showBones; this.classList.toggle('on', showBones); apply();
+});
+
+/* ---- orbit ------------------------------------------------------------ */
+function place () {
+  var p = orbit.pitch, y = orbit.yaw, d = orbit.dist;
+  var cam = document.getElementById('cam');
+  var x = orbit.target.x + d * Math.cos(p) * Math.sin(y);
+  var z = orbit.target.z + d * Math.cos(p) * Math.cos(y);
+  var yy = orbit.target.y + d * Math.sin(p);
+  cam.setAttribute('position', { x: x, y: yy, z: z });
+  /* Set the ROTATION component, not object3D.lookAt: A-Frame rewrites the
+     object3D from the rotation component every frame, so a lookAt is undone
+     before the next draw and the model never appears. */
+  cam.setAttribute('rotation', {
+    x: -p * 180 / Math.PI,
+    y: y * 180 / Math.PI,
+    z: 0
+  });
+}
+
+var dragging = false, lastX = 0, lastY = 0;
+window.addEventListener('mousedown', function (e) {
+  if (e.target.closest('#ui')) { return; }
+  dragging = true; lastX = e.clientX; lastY = e.clientY;
+});
+window.addEventListener('mouseup', function () { dragging = false; });
+window.addEventListener('mousemove', function (e) {
+  if (!dragging) { return; }
+  orbit.yaw -= (e.clientX - lastX) * 0.008;
+  orbit.pitch = Math.max(-1.2, Math.min(1.3, orbit.pitch + (e.clientY - lastY) * 0.006));
+  lastX = e.clientX; lastY = e.clientY;
+  place();
+});
+window.addEventListener('wheel', function (e) {
+  orbit.dist = Math.max(0.25, Math.min(8, orbit.dist * (1 + e.deltaY * 0.0012)));
+  place();
+}, { passive: true });
+
+window.addEventListener('keydown', function (e) {
+  for (var i = 0; i < ASSETS.length; i++) {
+    if (e.key === ASSETS[i].key) { load(i); return; }
+  }
+  if (e.key === 'w') { document.getElementById('wire').click(); }
+  if (e.key === 'b') { document.getElementById('bones').click(); }
+});
+
+/* ---- boot ------------------------------------------------------------- */
+ASSETS.forEach(function (a, i) {
+  var b = document.createElement('button');
+  b.textContent = a.label;
+  b.addEventListener('click', function () { load(i); });
+  document.getElementById('pick').appendChild(b);
+});
+scene.addEventListener('loaded', function () { load(1); place(); });
+</script>
+</body>
+</html>
